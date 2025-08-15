@@ -1,0 +1,59 @@
+# Core Dependencies for VisFly-Eureka Integration System
+
+# Deep Learning and Scientific Computing
+torch>=1.12.0
+numpy>=1.21.0
+scipy>=1.7.0
+
+# LLM Integration
+openai>=1.0.0
+anthropic>=0.3.0
+
+# Reinforcement Learning
+stable-baselines3>=1.6.0
+gymnasium>=0.26.0
+
+# Visualization and Monitoring
+tensorboard>=2.10.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# Configuration Management
+pyyaml>=6.0
+omegaconf>=2.2.0
+
+# System Monitoring
+psutil>=5.8.0
+GPUtil>=1.4.0
+
+# Data Processing
+pandas>=1.4.0
+pillow>=8.3.0
+
+# Parallel Processing
+joblib>=1.1.0
+concurrent-futures>=3.1.0
+
+# Utilities
+tqdm>=4.62.0
+click>=8.0.0
+pathlib2>=2.3.0
+
+# Testing (optional)
+pytest>=6.2.0
+pytest-cov>=3.0.0
+
+# Development Tools (optional)
+black>=22.0.0
+isort>=5.10.0
+flake8>=4.0.0
+
+# Note: VisFly dependencies should be installed separately
+# following the instructions in VisFly repository:
+# - habitat-sim (custom build required)
+# - CGAL (system dependency: sudo apt-get install libcgal-dev)
+# 
+# VisFly installation:
+# conda env create -f VisFly/environment.yml
+# or
+# conda env create -f VisFly/environment-ng.yaml
