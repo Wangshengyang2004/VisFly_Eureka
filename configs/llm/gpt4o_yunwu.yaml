@@ -1,0 +1,26 @@
+# GPT-4o via yunwu.ai configuration
+
+# @package _global_
+llm:
+  provider: "yunwu"
+  model: "gpt-4o"
+  api_key: "sk-d5xsR51vSGaBSRxtimtIXt2p928HW01YqivHaRzNwrzVcuHs"
+  base_url: "https://yunwu.ai/v1"
+  
+  # Generation parameters
+  temperature: 0.8
+  max_tokens: 2000
+  top_p: 1.0
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+  
+  # Request settings
+  timeout: 120
+  max_retries: 3
+  request_delay: 0.5      # Delay between requests to avoid rate limits
+  batch_size: 10          # Max functions per API call (for providers that support it)
+  
+  # Advanced settings
+  use_chat_completion: true
+  system_message_enabled: true
+  conversation_memory: true

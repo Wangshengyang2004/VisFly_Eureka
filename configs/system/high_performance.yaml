@@ -1,0 +1,38 @@
+# High performance system configuration
+
+# @package _global_
+system:
+  # Resource management
+  memory:
+    max_memory_gb: 64         # Use more memory
+    cleanup_interval: 50      # More frequent cleanup
+    
+  # GPU settings
+  gpu:
+    auto_select: true
+    memory_fraction: 0.9      # Use 90% of GPU memory
+    allow_growth: false       # Pre-allocate for performance
+    
+  # Parallel execution
+  parallel:
+    num_processes: 4          # Use multiple processes
+    use_multiprocessing: true
+    shared_memory: true       # Share memory between processes
+    
+  # Safety and reliability
+  safety:
+    max_training_time: 7200   # 2 hours max per training
+    auto_restart: true
+    error_tolerance: 0.1      # Stricter error tolerance
+    
+  # File management
+  files:
+    keep_intermediate: false  # Don't keep intermediate files
+    compress_logs: true       # Compress logs to save space
+    backup_best: true
+    
+  # Monitoring
+  monitoring:
+    check_interval: 10        # More frequent monitoring
+    log_system_stats: true
+    alert_on_failure: true    # Enable alerts

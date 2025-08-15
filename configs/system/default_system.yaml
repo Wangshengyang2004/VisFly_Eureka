@@ -1,0 +1,38 @@
+# System-wide configuration
+
+# @package _global_
+system:
+  # Resource management
+  memory:
+    max_memory_gb: 16         # Max memory usage
+    cleanup_interval: 100     # Clean up every N samples
+    
+  # GPU settings
+  gpu:
+    auto_select: true         # Automatically select freest GPU
+    memory_fraction: 0.8      # Use 80% of GPU memory
+    allow_growth: true        # Allow memory growth
+    
+  # Parallel execution
+  parallel:
+    num_processes: 1          # Number of parallel training processes
+    use_multiprocessing: false
+    shared_memory: false
+    
+  # Safety and reliability
+  safety:
+    max_training_time: 3600   # 1 hour max per training
+    auto_restart: true        # Restart on crashes
+    error_tolerance: 0.3      # Allow 30% failures
+    
+  # File management
+  files:
+    keep_intermediate: true   # Keep intermediate files
+    compress_logs: false      # Compress log files
+    backup_best: true         # Backup best reward functions
+    
+  # Monitoring
+  monitoring:
+    check_interval: 30        # Check system status every 30s
+    log_system_stats: true    # Log CPU/GPU/memory usage
+    alert_on_failure: false   # Send alerts on failures

@@ -1,0 +1,26 @@
+# GPT-4o via OpenAI official API
+
+# @package _global_
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+  api_key: "${oc.env:OPENAI_API_KEY}"  # Read from environment
+  base_url: "https://api.openai.com/v1"
+  
+  # Generation parameters
+  temperature: 0.8
+  max_tokens: 2000
+  top_p: 1.0
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+  
+  # Request settings
+  timeout: 120
+  max_retries: 3
+  request_delay: 1.0      # OpenAI has stricter rate limits
+  batch_size: 5           # Conservative batch size for OpenAI
+  
+  # Advanced settings
+  use_chat_completion: true
+  system_message_enabled: true
+  conversation_memory: true
