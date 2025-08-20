@@ -11,57 +11,42 @@ from pathlib import Path
 
 
 def create_system_prompt() -> str:
-    """
-    Create the system prompt for LLM reward function generation.
-    
-    This prompt establishes the context, constraints, and requirements
-    for generating VisFly-compatible reward functions.
-    """
-    return """You are an expert at designing reward functions for VisFly drone environments. Your task is to generate complete get_reward methods that enable effective reinforcement learning for vision-based drone tasks.
+    """Create system prompt for LLM reward function generation."""
+    return """You are a reward function designer for VisFly drone environments. Generate complete get_reward methods for reinforcement learning.
 
-VisFly Environment Context:
-- self.position: torch.Tensor [N, 3] - drone positions in 3D space
-- self.velocity: torch.Tensor [N, 3] - linear velocities 
-- self.orientation: torch.Tensor [N, 4] - quaternion orientations
-- self.angular_velocity: torch.Tensor [N, 3] - angular velocities
-- self.target: torch.Tensor [N, 3] - target positions (when applicable)
-- self.sensor_obs: dict containing sensor observations
-  - 'depth': torch.Tensor [N, H, W] - depth camera readings
-  - 'rgb': torch.Tensor [N, H, W, 3] - RGB camera readings
-- self.collision_dis: torch.Tensor [N] - distance to closest obstacle
-- self._step_count: int - current episode step
-- self.num_agent: int - number of agents in environment
-- self.max_episode_steps: int - maximum steps per episode
+Environment Variables:
+- self.position: [N, 3] drone positions
+- self.velocity: [N, 3] linear velocities  
+- self.orientation: [N, 4] quaternions
+- self.angular_velocity: [N, 3] angular velocities
+- self.target: [N, 3] target positions
+- self.collision_dis: [N] obstacle distances
+- self.sensor_obs['depth']: [N, H, W] depth camera
+- self._step_count: current step
+- self.num_agent: agent count
 
-Critical Requirements:
-1. Return complete get_reward(self) method definition
-2. Use torch operations exclusively for differentiability
-3. Return torch.Tensor with shape [N] for N agents
-4. Utilize visual sensors (depth/rgb) when available and relevant
-5. No imports needed - torch/th/F are available in execution context
-6. Handle edge cases gracefully (missing attributes, zero divisions)
-7. Ensure differentiable operations for BPTT compatibility
-8. Use torch.clamp() for numerical stability in divisions/norms
+Requirements:
+1. Return complete get_reward(self) method
+2. Use torch operations only
+3. Return shape [N] tensor
+4. No imports needed (torch/th available)
+
+BPTT Gradient Tips:
+- ALWAYS use (self.velocity - 0) or self.velocity.clone() to avoid in-place gradient issues
+- ALWAYS use (self.angular_velocity - 0) or self.angular_velocity.clone() 
+- Example: velocity_penalty = -torch.norm(self.velocity - 0, dim=1)
+- This creates new tensors that preserve gradient flow
 
 Common Patterns:
-- Distance rewards: -torch.norm(self.position - self.target, dim=1)
-- Velocity rewards: torch.norm(self.velocity, dim=1) or -torch.norm(self.velocity, dim=1)
-- Collision avoidance: -torch.sum(depth < threshold, dim=(1,2)) * penalty
-- Stability rewards: -torch.norm(orientation - target_orientation, dim=1)
-- Time penalties: -torch.ones(self.num_agent) * step_penalty
+- Distance: -torch.norm(self.position - self.target, dim=1)
+- Velocity penalty: -torch.norm(self.velocity - 0, dim=1) * 0.01
+- Collision: -1.0 / (self.collision_dis + 0.2)
+- Stability: -torch.norm(self.angular_velocity - 0, dim=1) * 0.001
 
-Safety Guidelines:
-- Always check attribute existence with hasattr()
-- Use torch.clamp() to prevent division by zero
-- Ensure reward tensors have correct shape
-- Avoid in-place operations that break gradients
-- Use .clone() or + 0.0 to create new tensors when needed
-
-Generate reward functions that are:
-1. Mathematically sound and numerically stable
-2. Appropriate for the specific task description
-3. Balanced between different reward components
-4. Optimized for the drone dynamics and sensor capabilities"""
+Safety:
+- Use torch.clamp(x, min=1e-8) for divisions
+- Check hasattr() for optional attributes
+- Ensure output shape matches self.num_agent"""
 
 
 def get_navigation_env_code() -> str:
@@ -170,7 +155,7 @@ class NavigationEnv(DroneGymEnvsBase):
         orientation = self.envs.dynamics._orientation.clone()
         rela = self.target - self.position
         head_target = orientation.world_to_head(rela.T).T
-        head_velocity = orientation.world_to_head((self.velocity - 0).T).T
+        head_velocity = orientation.world_to_head((self.velocity - 0).T).T  # Note: (velocity - 0) for BPTT gradient safety
 
         # State observations
         obs = {
@@ -317,36 +302,21 @@ def create_improvement_prompt(
     performance_issues: str,
     task_description: str
 ) -> str:
-    """
-    Create a prompt for improving an existing reward function.
-    
-    Args:
-        original_code: Original reward function code
-        performance_issues: Description of performance problems
-        task_description: Original task description
-        
-    Returns:
-        Improvement prompt string
-    """
+    """Create prompt for improving existing reward function."""
     return f"""Task: {task_description}
 
-The following reward function has performance issues:
-
+Current reward has issues:
 ```python
 {original_code}
 ```
 
-Performance Issues Identified:
-{performance_issues}
+Issues: {performance_issues}
 
-Please provide an improved version that addresses these specific issues while:
-1. Maintaining the same function signature and structure
-2. Fixing the identified problems
-3. Preserving any working aspects of the original reward
-4. Using more sophisticated reward shaping if needed
-5. Ensuring numerical stability and gradient compatibility
+Fix these problems. Remember BPTT gradient tips:
+- Use (self.velocity - 0) not self.velocity directly
+- Use (self.angular_velocity - 0) not self.angular_velocity directly
 
-Generate the complete improved get_reward(self) method:"""
+Generate improved get_reward(self) method:"""
 
 
 def create_context_aware_prompt(
@@ -397,38 +367,18 @@ Provide complete get_reward(self) method:""")
     return "\n".join(prompt_parts)
 
 
-# Specialized prompts for different environment types
+# Task-specific hints (concise)
 NAVIGATION_PROMPT_SUFFIX = """
-For navigation tasks, consider:
-- Distance to target as primary reward component
-- Obstacle avoidance using depth sensor
-- Smooth trajectories (velocity/acceleration penalties)
-- Orientation alignment with movement direction
-- Energy efficiency (control effort penalties)"""
+Navigation: Focus on distance to target, collision avoidance via depth, smooth velocity."""
 
 RACING_PROMPT_SUFFIX = """
-For racing tasks, consider:
-- Forward velocity rewards
-- Gate/checkpoint passing bonuses
-- Racing line optimization
-- Speed vs. control trade-offs
-- Lap time minimization"""
+Racing: Maximize forward velocity, gate passing, optimize racing line."""
 
 HOVERING_PROMPT_SUFFIX = """
-For hovering tasks, consider:
-- Position stability around target
-- Velocity minimization
-- Orientation stability
-- Altitude maintenance
-- Disturbance rejection"""
+Hovering: Minimize position/velocity errors, stabilize orientation. Use (self.velocity - 0)."""
 
 TRACKING_PROMPT_SUFFIX = """
-For tracking tasks, consider:
-- Target relative position/velocity
-- Prediction and anticipation
-- Smooth tracking vs. responsiveness
-- Visual target detection and following
-- Maintaining optimal tracking distance"""
+Tracking: Maintain relative position, smooth following, visual tracking."""
 
 
 def get_task_specific_prompt_suffix(task_description: str) -> str:
@@ -460,32 +410,15 @@ def create_multi_objective_prompt(
     secondary_objectives: list,
     constraints: list = None
 ) -> str:
-    """
-    Create a prompt for multi-objective reward functions.
-    
-    Args:
-        primary_objective: Main objective description
-        secondary_objectives: List of secondary objectives
-        constraints: List of constraints to satisfy
-        
-    Returns:
-        Multi-objective prompt string
-    """
-    prompt_parts = [f"Primary Objective: {primary_objective}"]
+    """Create multi-objective reward prompt."""
+    parts = [f"Primary: {primary_objective}"]
     
     if secondary_objectives:
-        prompt_parts.append("\nSecondary Objectives:")
-        for i, obj in enumerate(secondary_objectives, 1):
-            prompt_parts.append(f"{i}. {obj}")
+        parts.append("Secondary: " + ", ".join(secondary_objectives))
     
     if constraints:
-        prompt_parts.append("\nConstraints:")
-        for i, constraint in enumerate(constraints, 1):
-            prompt_parts.append(f"{i}. {constraint}")
+        parts.append("Constraints: " + ", ".join(constraints))
     
-    prompt_parts.append("""
-Create a reward function that balances these multiple objectives appropriately.
-Use weighted combinations and consider the relative importance of each component.
-Provide the complete get_reward(self) method with clear component explanations:""")
+    parts.append("\nBalance objectives with weights. Use (self.velocity - 0) for BPTT.\nGenerate get_reward(self):")
     
-    return "\n".join(prompt_parts)
+    return "\n".join(parts)
