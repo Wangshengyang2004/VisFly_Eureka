@@ -4,149 +4,188 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-VisFly_Eureka is a project that combines VisFly (a versatile quadrotor simulator for visual-based flight) with Eureka (an LLM-powered reward function optimization framework). The goal is to reproduce Eureka functionality in a professional UAV simulator environment.
+VisFly_Eureka integrates VisFly (a high-performance visual-based quadrotor simulator) with Eureka (LLM-powered reward optimization). The project implements native Eureka functionality directly into VisFly environments for automated reward function generation and optimization.
 
-### Key Components
+### Project Structure
 
-- **VisFly/**: Main simulator package for visual-based drone flight
-- **backup/Eureka/**: Original Eureka codebase for reference
-- **SPEC.md**: Migration specification document
-
-## Environment Setup
-
-### Prerequisites
-
-The project uses conda environments with specific versions. Two environment files are available:
-
-```bash
-# For Python 3.9 (primary)
-conda env create -f VisFly/environment.yml
-
-# For Python 3.10 (alternative)
-conda env create -f VisFly/environment-ng.yaml
-```
-
-### Additional Dependencies
-
-- Install CGAL (Computational Geometry Algorithms Library):
-  ```bash
-  sudo apt-get install libcgal-dev
-  ```
-- Modified habitat-sim must be built from source following the instructions in the VisFly README
-
-### Dataset Setup
-
-Download the visfly-beta dataset from Hugging Face:
-```bash
-cd VisFly/datasets
-git clone https://YourUsername:YourAccessToken@huggingface.co/datasets/LiFanxing/visfly-beta.git
-```
+- **VisFly/**: Core simulator with differentiable dynamics and visual rendering
+  - `envs/`: Environment implementations (NavigationEnv, RacingEnv, HoverEnv, etc.)
+  - `utils/algorithms/`: BPTT, PPO, SAC implementations
+  - `utils/policies/`: Feature extractors and policy networks
+  - `examples/`: Training scripts and demos
+- **backup/Eureka/**: Reference Eureka implementation
+- **eureka_visfly/**: Native Eureka-VisFly integration (to be implemented)
+- **SPEC.md**: Native integration specification
 
 ## Development Commands
 
-### Training Examples
+### Setup and Installation
 
 ```bash
-# Train a navigation agent
-python examples/navigation/bptt.py -t 1
+# Install system dependencies
+sudo apt-get install libcgal-dev
 
-# Test a trained model
-python examples/navigation/bptt.py -t 0 -w MODEL_NAME
+# Create conda environment (Python 3.9 or 3.10)
+conda env create -f VisFly/environment.yml
+# or
+conda env create -f VisFly/environment-ng.yaml
 
-# Train with custom comment/identifier
-python examples/navigation/bptt.py -t 1 -c "custom_experiment"
+# Install modified habitat-sim from source
+git clone https://github.com/Fanxing-LI/habitat-sim
+cd habitat-sim
+# Follow habitat-sim build instructions
+
+# Download visfly-beta dataset
+cd VisFly/datasets
+git clone https://YourUsername:YourAccessToken@huggingface.co/datasets/LiFanxing/visfly-beta.git
+
+# Install project
+pip install -e .
 ```
 
-### Common Arguments
+### Training and Testing
 
-- `-t`: Training mode (1) or testing mode (0)
-- `-w`: Model weight path to load
-- `-c`: Comment/identifier for saving models
+```bash
+# BPTT training (differentiable simulation)
+python VisFly/examples/navigation/bptt.py -t 1 -c "experiment_name"
+python VisFly/examples/diff_hovering/bptt.py -t 1
 
-## Architecture Overview
+# PPO/SAC training
+python VisFly/examples/cluttered_flight/rl.py -t 1 -c "ppo_experiment"
 
-### Core Components
+# Test trained models
+python VisFly/examples/navigation/bptt.py -t 0 -w "MODEL_NAME"
 
-1. **Environment System** (`VisFly/envs/`)
-   - Base classes: `droneEnv.py`, `droneGymEnv.py`
-   - Specific environments: `NavigationEnv.py`, `RacingEnv.py`, `HoverEnv.py`, etc.
-   - Multi-agent support: `multiDroneGymEnv.py`
+# Common arguments:
+# -t: 1=train, 0=test
+# -w: model weights path
+# -c: comment/identifier for saved models
+```
 
-2. **Dynamics and Control** (`VisFly/envs/base/`)
-   - `dynamics.py`: Physics simulation
-   - `controller.py`: Control algorithms
-   
-3. **Policy Networks** (`VisFly/utils/policies/`)
-   - Feature extractors for various sensor inputs
-   - Support for CNN, MLP, and recurrent architectures
-   - Custom extractors can be added in `extractors.py`
+### Monitoring
 
-4. **Algorithms** (`VisFly/utils/algorithms/`)
-   - `BPTT.py`: Back-propagation through time for differentiable simulation
-   - `PPO.py`, `SAC.py`: Standard RL algorithms
+```bash
+# Launch tensorboard for training monitoring
+tensorboard --logdir VisFly/examples/*/saved/
+```
 
-5. **Scene Management** (`VisFly/utils/`)
-   - `SceneManager.py`: Environment scene handling
-   - `ObjectManger.py`: Dynamic object management
+## High-Level Architecture
 
-### Key Features
+### Native Eureka-VisFly Integration
 
-- **Differentiable Simulation**: Supports BPTT training with analytical gradients
-- **Visual Rendering**: High FPS rendering (up to 10kHz) with habitat-sim backend  
-- **Flexible Environments**: Easy customization of reward functions and observations
-- **Multi-sensor Support**: Depth cameras, RGB cameras, IMU data
-- **Scene Datasets**: Rich 3D environments from Replica and custom scenes
-
-## Environment Configuration
-
-### Basic Environment Setup
+The native integration allows direct reward function injection without adapter layers:
 
 ```python
-env = NavigationEnv(
-    num_agent_per_scene=1,
-    num_scene=1,
-    visual=True,
-    device="cuda",
-    max_episode_steps=256,
-    dynamics_kwargs={
-        "action_type": "bodyrate",  # ["bodyrate", "thrust", "velocity", "position"]
-        "dt": 0.0025,  # simulation timestep
-        "ctrl_dt": 0.02,  # control timestep
-    },
-    scene_kwargs={
-        "path": "datasets/visfly-beta/configs/scenes/SCENE_NAME"
-    },
-    sensor_kwargs=[{
-        "sensor_type": habitat_sim.SensorType.DEPTH,
-        "uuid": "depth",
-        "resolution": [64, 64],
-    }],
-    target=torch.tensor([9, 0., 1]),  # target position
-)
+# Direct reward injection pattern
+def inject_generated_reward(env_instance, reward_code):
+    exec(reward_code, {'torch': torch, 'th': torch})
+    env_instance.get_reward = types.MethodType(exec_globals['get_reward'], env_instance)
+
+# Usage
+nav_env = NavigationEnv(...)
+inject_generated_reward(nav_env, llm_generated_code)
 ```
 
-### Custom Environment Creation
+### Key VisFly Environment Properties
 
-To create new environments:
-1. Inherit from `DroneGymEnvsBase`
-2. Implement `get_observation()`, `get_reward()`, `get_success()`
-3. Add custom observation spaces as needed
+Accessible in reward functions via `self`:
+- `position`: torch.Tensor [N, 3] - drone positions
+- `velocity`: torch.Tensor [N, 3] - linear velocities
+- `orientation`: torch.Tensor [N, 4] - quaternions
+- `angular_velocity`: torch.Tensor [N, 3]
+- `target`: torch.Tensor [N, 3] - target positions
+- `sensor_obs`: dict with 'depth'/'rgb' sensor data
+- `collision_dis`: torch.Tensor [N] - obstacle distances
+- `collision_point`, `collision_vector`: collision info
+- `_step_count`: int - current episode step
+- `max_episode_steps`: int - episode limit
+- `_success`: bool - success flag
 
-## Development Workflow
+### Training Algorithms
 
-1. **Environment Development**: Create/modify environments in `VisFly/envs/`
-2. **Policy Design**: Customize feature extractors in `VisFly/utils/policies/extractors.py`
-3. **Training**: Use BPTT for differentiable simulation or standard RL algorithms
-4. **Evaluation**: Test trained models with evaluation scripts
+1. **BPTT** (Back-propagation through time)
+   - Requires `requires_grad=True` in env setup
+   - Uses analytical gradients through differentiable simulation
+   - Best for precise control tasks
 
-## Important Notes
+2. **PPO/SAC** (Standard RL)
+   - Works with any environment configuration
+   - Better for exploration-heavy tasks
 
-- GPU acceleration is recommended for visual environments
-- For fewer than 1000 environments, CPU may be faster than GPU
-- Differentiable simulation requires `requires_grad=True` in environment setup
-- Models are saved with format: `ALGORITHM_COMMENT_INDEX.zip`
-- Use tensorboard for training monitoring
+### Custom Environment Template
 
-## Migration from Eureka
+```python
+from VisFly.envs.droneGymEnv import DroneGymEnvsBase
+import torch as th
+from gym import spaces
 
-The project aims to integrate Eureka's reward function optimization with VisFly's simulation capabilities. The original Eureka code is preserved in `backup/Eureka/` for reference during implementation.
+class CustomEnv(DroneGymEnvsBase):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Add custom observation spaces
+        self.observation_space["custom"] = spaces.Box(...)
+        
+    def get_observation(self, indices=None):
+        return {
+            "state": self.sensor_obs["IMU"].cpu().numpy(),
+            "depth": self.sensor_obs["depth"],
+            "custom": self.custom_obs,
+        }
+    
+    def get_reward(self) -> th.Tensor:
+        # Return tensor of shape [num_agents]
+        return reward_tensor
+    
+    def get_success(self) -> th.Tensor:
+        # Return boolean tensor of shape [num_agents]
+        return success_tensor
+```
+
+## Eureka Integration Workflow
+
+1. **Generate Rewards**: LLM creates reward functions based on task description
+2. **Inject Functions**: Direct injection into VisFly environment instances
+3. **Train & Evaluate**: Use BPTT or PPO to train with generated rewards
+4. **Iterate**: Refine rewards based on training performance
+
+### Example Eureka Usage (once implemented)
+
+```python
+from eureka_visfly import EurekaVisFly
+from VisFly.envs.NavigationEnv import NavigationEnv
+
+eureka = EurekaVisFly(
+    env_class=NavigationEnv,
+    task_description="Navigate to target avoiding obstacles",
+    llm_config={"model": "gpt-4", "api_key": os.getenv("OPENAI_API_KEY")}
+)
+
+best_rewards = eureka.optimize_rewards(iterations=5, samples=16)
+```
+
+## Performance Tips
+
+- **GPU vs CPU**: GPU recommended for visual environments; CPU may be faster for <1000 envs
+- **Batch Size**: Use `num_agent_per_scene` to control parallel environments
+- **Memory**: Reduce batch size if encountering GPU OOM errors
+- **Differentiable Mode**: Set `torch.autograd.set_detect_anomaly(False)` for performance
+
+## Testing
+
+```bash
+# Run unit tests (once implemented)
+pytest tests/
+
+# Test specific components
+pytest tests/test_reward_injection.py -v
+pytest tests/test_training.py -v
+```
+
+## Important File Locations
+
+- Training scripts: `VisFly/examples/*/`
+- Environment definitions: `VisFly/envs/`
+- Feature extractors: `VisFly/utils/policies/extractors.py`
+- BPTT implementation: `VisFly/utils/algorithms/BPTT.py`
+- Scene configs: `VisFly/datasets/visfly-beta/configs/`
+- Saved models: `VisFly/examples/*/saved/`

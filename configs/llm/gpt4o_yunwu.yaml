@@ -4,7 +4,7 @@
 llm:
   provider: "yunwu"
   model: "gpt-4o"
-  api_key: "sk-d5xsR51vSGaBSRxtimtIXt2p928HW01YqivHaRzNwrzVcuHs"
+  api_key: "${oc.env:YUNWU_API_KEY}"  # Read from environment variable
   base_url: "https://yunwu.ai/v1"
   
   # Generation parameters

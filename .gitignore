@@ -146,6 +146,10 @@ config_local.py
 secrets.json
 .env.local
 api_keys.txt
+api_keys.yaml
+configs/api_keys.yaml
+configs/llm/*_local.yaml
+configs/llm/*_private.yaml
 
 # Large binary files
 *.zip
