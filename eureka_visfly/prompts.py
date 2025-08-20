@@ -6,15 +6,13 @@ reward functions for VisFly drone environments.
 """
 
 from typing import Dict, Any
-import re
-from pathlib import Path
 
 
 def create_system_prompt() -> str:
     """Create system prompt for LLM reward function generation."""
     return """You are a reward function designer for VisFly drone environments. Generate complete get_reward methods for reinforcement learning.
 
-Environment Variables:
+Environment Variables (always available):
 - self.position: [N, 3] drone positions
 - self.velocity: [N, 3] linear velocities  
 - self.orientation: [N, 4] quaternions
@@ -30,10 +28,11 @@ Requirements:
 2. Use torch operations only
 3. Return shape [N] tensor
 4. No imports needed (torch/th available)
+5. Be confident - all listed variables exist, use them directly
 
-BPTT Gradient Tips:
-- ALWAYS use (self.velocity - 0) or self.velocity.clone() to avoid in-place gradient issues
-- ALWAYS use (self.angular_velocity - 0) or self.angular_velocity.clone() 
+BPTT Gradient Tips (CRITICAL):
+- ALWAYS use (self.velocity - 0) to avoid in-place gradient issues
+- ALWAYS use (self.angular_velocity - 0) for gradient safety
 - Example: velocity_penalty = -torch.norm(self.velocity - 0, dim=1)
 - This creates new tensors that preserve gradient flow
 
@@ -43,10 +42,10 @@ Common Patterns:
 - Collision: -1.0 / (self.collision_dis + 0.2)
 - Stability: -torch.norm(self.angular_velocity - 0, dim=1) * 0.001
 
-Safety:
-- Use torch.clamp(x, min=1e-8) for divisions
-- Check hasattr() for optional attributes
-- Ensure output shape matches self.num_agent"""
+Numerical Safety:
+- Use torch.clamp(x, min=1e-8) only for division denominators
+- Write clean, confident code without excessive checks
+- Trust the environment structure"""
 
 
 def get_navigation_env_code() -> str:
@@ -223,22 +222,14 @@ class NavigationEnv(DroneGymEnvsBase):
     def reset(self, indices=None):
         \"\"\"Reset environment with new target and random initial positions\"\"\"
         super().reset(indices)
-        
-        # Optionally randomize target (can be overridden in subclasses)
-        if hasattr(self, 'randomize_target') and self.randomize_target:
-            # Random target within reasonable bounds
-            target_x = th.uniform(-10, 20, (self.num_envs, 1), device=self.device)
-            target_y = th.uniform(-5, 5, (self.num_envs, 1), device=self.device) 
-            target_z = th.uniform(1, 3, (self.num_envs, 1), device=self.device)
-            self.target = th.cat([target_x, target_y, target_z], dim=1)
-            
+        # Environment is well-defined, target is always available
         return self.get_observation()
 """
 
 
 def extract_env_code_without_reward(env_class) -> str:
     """
-    Extract environment code with reward function removed (optimized to avoid blocking).
+    Extract environment code with reward function removed.
     
     Args:
         env_class: Environment class to extract code from
@@ -246,12 +237,12 @@ def extract_env_code_without_reward(env_class) -> str:
     Returns:
         Environment source code with get_reward method stripped
     """
-    # Use pre-extracted code to avoid blocking environment creation
-    if hasattr(env_class, '__name__') and env_class.__name__ == 'NavigationEnv':
+    # Use pre-extracted code for NavigationEnv
+    if env_class.__name__ == 'NavigationEnv':
         return get_navigation_env_code()
     else:
         # Fallback for other environments
-        return f"# Environment: {env_class.__name__ if hasattr(env_class, '__name__') else 'Unknown'}\n# Pre-extracted code not available for this environment type."
+        return f"# Environment: {env_class.__name__}\n# Pre-extracted code not available for this environment type."
 
 
 def create_user_prompt(
@@ -325,44 +316,27 @@ def create_context_aware_prompt(
     sensor_data_shapes: Dict[str, tuple],
     previous_rewards: list = None
 ) -> str:
-    """
-    Create a context-aware prompt using actual environment observations.
-    
-    Args:
-        task_description: Task description
-        environment_observations: Sample observations from environment
-        sensor_data_shapes: Shapes of sensor data tensors
-        previous_rewards: List of previous reward function attempts
-        
-    Returns:
-        Context-aware prompt
-    """
+    """Create context-aware prompt using actual environment observations."""
     prompt_parts = [f"Task: {task_description}"]
     
-    # Environment observation details
+    # Direct environment state (confident about tensor shapes)
     if environment_observations:
-        prompt_parts.append("\nCurrent Environment State:")
-        
+        prompt_parts.append("\nEnvironment State:")
         for key, value in environment_observations.items():
-            if hasattr(value, 'shape'):
-                prompt_parts.append(f"- {key}: shape {value.shape}")
-            else:
-                prompt_parts.append(f"- {key}: {type(value)}")
+            # Assume tensors have shape attribute
+            prompt_parts.append(f"- {key}: shape {value.shape}")
     
-    # Sensor data information
+    # Sensor shapes
     if sensor_data_shapes:
-        prompt_parts.append("\nSensor Data Shapes:")
+        prompt_parts.append("\nSensor Shapes:")
         for sensor_name, shape in sensor_data_shapes.items():
             prompt_parts.append(f"- {sensor_name}: {shape}")
     
-    # Previous attempts (if any)
+    # Previous attempts
     if previous_rewards:
-        prompt_parts.append(f"\nPrevious Attempts: {len(previous_rewards)} reward functions tested")
-        prompt_parts.append("Focus on novel approaches that haven't been tried yet.")
+        prompt_parts.append(f"\nTried {len(previous_rewards)} functions. Generate a different approach.")
     
-    prompt_parts.append("""
-Generate a reward function that takes advantage of the specific environment state and sensor data available.
-Provide complete get_reward(self) method:""")
+    prompt_parts.append("\nUse (self.velocity - 0) and (self.angular_velocity - 0) for BPTT.\nGenerate get_reward(self):")
     
     return "\n".join(prompt_parts)
 
