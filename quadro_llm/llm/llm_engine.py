@@ -18,7 +18,7 @@ except ImportError:
     OpenAI = None
 
 from .prompts import create_system_prompt, create_user_prompt, extract_env_code_without_reward
-from .reward_injection import extract_reward_function
+from ..utils.reward_injection import extract_reward_function
 
 
 class LLMEngine:

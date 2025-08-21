@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup script for VisFly-Eureka Integration System
+Setup script for Quadro-LLM Integration System
 """
 
 from setuptools import setup, find_packages
@@ -22,11 +22,11 @@ def read_requirements():
     return requirements
 
 setup(
-    name="eureka-visfly",
+    name="quadro-llm",
     version="1.0.0",
     author="Claude Code & Simon Wang",
     author_email="wangshengyang2004@gmail.com",
-    description="VisFly-Eureka Integration: LLM-powered reward optimization for autonomous drone navigation",
+    description="Quadro-LLM: LLM-powered reward optimization for autonomous drone navigation",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
     url="https://github.com/Wangshengyang2004/VisFly_Eureka",
@@ -55,13 +55,13 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "eureka-visfly=eureka_visfly.main:main",
-            "visfly-train=eureka_visfly.visfly_training_wrapper:main",
+            "quadro-llm=quadro_llm.main:main",
+            "visfly-train=quadro_llm.visfly_training_wrapper:main",
         ],
     },
     include_package_data=True,
     package_data={
-        "eureka_visfly": [
+        "quadro_llm": [
             "configs/*.yaml",
             "configs/*/*.yaml",
         ],
@@ -72,8 +72,8 @@ setup(
         "reward optimization",
         "LLM",
         "autonomous systems",
-        "eureka",
-        "visfly",
+        "quadrotor",
+        "llm",
         "simulation"
     ],
     project_urls={

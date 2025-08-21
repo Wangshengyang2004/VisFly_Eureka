@@ -23,10 +23,10 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, '/home/simonwsy/VisFly_Eureka')
 sys.path.insert(0, '/home/simonwsy/VisFly_Eureka/VisFly')
 
-from eureka_visfly import EurekaVisFly, OptimizationConfig, TrainingResult
-from eureka_visfly.parallel_training import ParallelTrainingManager, TrainingJob
-from eureka_visfly.gpu_monitor import GPUMonitor, DynamicGPUResourceManager
-from eureka_visfly.tensorboard_utils import (
+from quadro_llm import EurekaVisFly, OptimizationConfig, TrainingResult
+from quadro_llm.parallel_training import ParallelTrainingManager, TrainingJob
+from quadro_llm.gpu_monitor import GPUMonitor, DynamicGPUResourceManager
+from quadro_llm.tensorboard_utils import (
     load_tensorboard_logs, 
     generate_eureka_style_feedback,
     compute_reward_correlation,
@@ -592,7 +592,7 @@ class EurekaNavigationPipeline:
     def _create_baseline_training_job(self) -> TrainingJob:
         """Create a training job for baseline performance evaluation"""
         # Use our VisFly training wrapper that can configure learning steps
-        script_path = "/home/simonwsy/VisFly_Eureka/eureka_visfly/visfly_training_wrapper.py"
+        script_path = "/home/simonwsy/VisFly_Eureka/quadro_llm/visfly_training_wrapper.py"
         
         # Setup environment variables for baseline training
         env_vars = {
@@ -646,7 +646,7 @@ class EurekaNavigationPipeline:
             # Create training job using our wrapper
             job = self.training_manager.create_training_job(
                 job_type="reward_experiment",
-                script_path="/home/simonwsy/VisFly_Eureka/eureka_visfly/visfly_training_wrapper.py",
+                script_path="/home/simonwsy/VisFly_Eureka/quadro_llm/visfly_training_wrapper.py",
                 arguments=[
                     "--train", "1",  # Training mode
                     "--comment", job_identifier,

@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).parent.absolute()
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "VisFly"))
 
-from eureka_visfly import EurekaNavigationPipeline, OptimizationReport
+from quadro_llm import EurekaNavigationPipeline, OptimizationReport
 
 
 def setup_logging(cfg: DictConfig):
