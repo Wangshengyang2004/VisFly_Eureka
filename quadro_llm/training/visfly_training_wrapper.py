@@ -18,9 +18,13 @@ import argparse
 import yaml
 from pathlib import Path
 
-# Add VisFly to path
-sys.path.append('/home/simonwsy/VisFly_Eureka/VisFly')
-sys.path.append('/home/simonwsy/VisFly_Eureka')
+# Add VisFly to path dynamically based on current file location
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent.parent  # Go up two levels to project root
+visfly_path = project_root / 'VisFly'
+
+sys.path.append(str(visfly_path))
+sys.path.append(str(project_root))
 
 # Import VisFly components
 from VisFly.utils.policies import extractors
