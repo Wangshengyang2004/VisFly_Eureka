@@ -4,7 +4,6 @@
 defaults:
   - envs: navigation
   - llm: gpt-4o
-  - system: default_system
   - task: navigation_task
   - _self_
 
@@ -45,6 +44,14 @@ logging:
   save_all_functions: true
   create_visualizations: true
   detailed_metrics: true
+
+# System settings
+system:
+  max_memory_gb: 16
+  gpu_memory_fraction: 0.8
+  parallel_processes: 1
+  max_training_time: 3600  # 1 hour per training
+  error_tolerance: 0.3
 
 # Hydra configuration
 hydra:
