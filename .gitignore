@@ -97,11 +97,11 @@ eureka_navigation_output/
 demo_configurable_output/
 test_short_output/
 
-# Temporary test files
-test_*.py
-demo_*.py
-*_test.py
-*_demo.py
+# Temporary test files (only in root directory)
+/test_*.py
+/demo_*.py
+/*_test.py
+/*_demo.py
 
 # GPU monitoring temporary files
 /tmp/
