@@ -37,11 +37,11 @@ def setup_logging(cfg: DictConfig):
     """Setup logging configuration"""
     log_level = getattr(logging, cfg.logging.level.upper())
     
+    # Only use console output - Hydra captures it to .hydra/main.log automatically
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler('pipeline.log'),  # Save to current Hydra directory
             logging.StreamHandler()
         ]
     )

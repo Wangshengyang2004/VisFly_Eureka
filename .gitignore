@@ -140,6 +140,7 @@ Thumbs.db
 *.log
 *.out
 *.err
+pipeline.log
 
 # Configuration files with secrets
 config_local.py
