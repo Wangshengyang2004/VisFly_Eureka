@@ -22,7 +22,7 @@ import queue
 import uuid
 from datetime import datetime
 
-from .gpu_monitor import GPUMonitor, DynamicGPUResourceManager
+from ..utils.gpu_monitor import GPUMonitor, DynamicGPUResourceManager
 
 
 @dataclass
@@ -105,18 +105,16 @@ class ParallelTrainingManager:
         self.injected_code_dir = self.artifacts_dir / "injected_code"
         self.injected_code_dir.mkdir(exist_ok=True)
         
-        self.logger.info(f"Initialized ParallelTrainingManager")
-        self.logger.info(f"Results directory: {self.session_dir}")
+        # ParallelTrainingManager initialized
     
     def start(self):
         """Start the parallel training system"""
         self.gpu_monitor.start_monitoring()
         self.gpu_monitor.log_gpu_status()
         
-        # Log GPU capabilities
+        # Calculate GPU capabilities
         estimates = self.gpu_monitor.estimate_max_parallel_jobs()
         total_capacity = sum(estimates.values())
-        self.logger.info(f"Estimated total parallel capacity: {total_capacity} jobs")
     
     def stop(self):
         """Stop the parallel training system"""

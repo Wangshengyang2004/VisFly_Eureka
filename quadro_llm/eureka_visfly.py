@@ -8,24 +8,14 @@ reward function optimization directly with VisFly environments.
 import torch
 import logging
 from typing import Type, Dict, Any, List, Optional
-from dataclasses import dataclass
 import time
 
-from .llm_engine import LLMEngine  
-from .reward_injection import inject_generated_reward
-from .training_utils import train_with_generated_reward, TrainingResult
-
-
-@dataclass
-class OptimizationConfig:
-    """Configuration for reward optimization process"""
-    iterations: int = 5
-    samples: int = 16
-    training_steps: int = 10000
-    algorithm: str = "bptt"  # "bptt" or "ppo"
-    evaluation_episodes: int = 10
-    success_threshold: float = 0.8
-    timeout_per_iteration: int = 1800  # 30 minutes per iteration
+from .llm.llm_engine import LLMEngine  
+from .utils.training_utils import TrainingResult
+from .core.models import OptimizationConfig
+from .core.evaluation import extract_environment_context_minimal
+from .core.subprocess_evaluator import SubprocessRewardEvaluator
+from .utils.tensorboard_utils import load_tensorboard_logs, generate_eureka_style_feedback, extract_success_metric
 
 
 class EurekaVisFly:
@@ -73,6 +63,9 @@ class EurekaVisFly:
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
         
+        # Initialize subprocess evaluator
+        self.evaluator = SubprocessRewardEvaluator(self.logger)
+        
         # Track optimization history
         self.optimization_history: List[List[TrainingResult]] = []
         self.best_reward_functions: List[str] = []
@@ -104,44 +97,82 @@ class EurekaVisFly:
         iterations = iterations or self.config.iterations
         samples = samples or self.config.samples
         
-        self.logger.info(f"Starting reward optimization: {iterations} iterations, {samples} samples each")
-        self.logger.info(f"Task: {self.task_description}")
+        # Starting optimization - details already logged by pipeline
         
         all_results = []
         
         for iteration in range(iterations):
-            self.logger.info(f"=== Iteration {iteration + 1}/{iterations} ===")
+            self.logger.info(f"Iteration {iteration + 1}")
             
             try:
                 # Generate reward function candidates
-                reward_functions = self.generate_reward_candidates(samples, iteration)
+                self.logger.info(f"Generating {samples} reward functions...")
+                # Use enhanced feedback with tensorboard data if available
+                feedback = self._generate_feedback_with_tensorboard(iteration) if iteration > 0 else None
+                reward_functions = self.generate_reward_candidates(samples, iteration, feedback)
                 
                 if not reward_functions:
                     self.logger.warning(f"No valid reward functions generated in iteration {iteration + 1}")
                     continue
-                    
-                # Evaluate each reward function
-                iteration_results = []
-                for idx, reward_code in enumerate(reward_functions):
-                    self.logger.info(f"Evaluating reward function {idx + 1}/{len(reward_functions)}")
-                    
-                    try:
-                        result = self.evaluate_reward_function(reward_code, f"iter{iteration}_sample{idx}")
-                        if result:
-                            iteration_results.append(result)
-                            all_results.append(result)
-                    except Exception as e:
-                        self.logger.error(f"Error evaluating reward function {idx + 1}: {e}")
-                        continue
+                
+                # Save generated reward functions first
+                self._save_reward_functions(reward_functions, iteration)
+                
+                # Use parallel evaluation with GPU task distribution
+                identifiers = [f"iter{iteration}_sample{idx}" for idx in range(len(reward_functions))]
+                
+                # Get GPU resource estimation from monitor
+                try:
+                    from ..utils.gpu_monitor import GPUMonitor
+                    gpu_monitor = GPUMonitor()
+                    gpu_estimates = gpu_monitor.estimate_max_parallel_jobs()
+                    max_concurrent = max(2, min(8, sum(gpu_estimates.values())))  # Between 2-8 concurrent jobs
+                    self.logger.info(f"Using {max_concurrent} parallel jobs across {len(gpu_estimates)} GPUs")
+                except:
+                    max_concurrent = 2  # Fallback
+                
+                self.logger.info(f"Evaluating {len(reward_functions)} functions...")
+                iteration_results = self.evaluator.evaluate_multiple_parallel(
+                    reward_functions=reward_functions,
+                    identifiers=identifiers,
+                    env_config=self.env_kwargs,
+                    optimization_config={
+                        'algorithm': self.config.algorithm,
+                        'training_steps': self.config.training_steps,
+                        'evaluation_episodes': self.config.evaluation_episodes
+                    },
+                    env_class_path=f"{self.env_class.__module__}.{self.env_class.__name__}",
+                    max_concurrent=max_concurrent,
+                    timeout=self.config.timeout_per_iteration
+                )
+                
+                # Convert to TrainingResult objects for compatibility
+                training_results = []
+                for result in iteration_results:
+                    if result.training_successful:
+                        training_result = TrainingResult(
+                            success_rate=result.success_rate,
+                            episode_length=result.episode_length,
+                            training_time=result.training_time,
+                            final_reward=result.final_reward,
+                            convergence_step=result.convergence_step,
+                            reward_code=result.reward_code,
+                            identifier=result.identifier
+                        )
+                        # Store log directory for tensorboard access
+                        if hasattr(result, 'log_dir'):
+                            training_result.log_dir = result.log_dir
+                        training_results.append(training_result)
+                        all_results.append(training_result)
                 
                 # Store iteration results
-                self.optimization_history.append(iteration_results)
+                self.optimization_history.append(training_results)
                 
                 # Update best reward functions
-                if iteration_results:
-                    best_in_iteration = max(iteration_results, key=lambda x: x.score())
+                if training_results:
+                    best_in_iteration = max(training_results, key=lambda x: x.score())
                     self.best_reward_functions.append(best_in_iteration.reward_code)
-                    self.logger.info(f"Best in iteration {iteration + 1}: {best_in_iteration.score():.3f}")
+                    self.logger.info(f"Best score: {best_in_iteration.score():.3f}")
                 
             except Exception as e:
                 self.logger.error(f"Error in iteration {iteration + 1}: {e}")
@@ -160,7 +191,7 @@ class EurekaVisFly:
     def generate_reward_candidates(self, samples: int, iteration: int, feedback: Optional[str] = None) -> List[str]:
         """Generate reward function candidates using LLM."""
         # Build context-aware prompt without creating environment (avoids blocking)
-        context_info = self.extract_environment_context_minimal()
+        context_info = extract_environment_context_minimal()
         if feedback is None:
             feedback = self.get_iteration_feedback(iteration)
         
@@ -173,49 +204,7 @@ class EurekaVisFly:
             env_class=self.env_class
         )
         
-        self.logger.info(f"Generated {len(reward_functions)} reward function candidates")
         return reward_functions
-        
-    def extract_environment_context_minimal(self) -> Dict[str, Any]:
-        """Extract environment context without creating environment instances."""
-        return {
-            "environment_class": "NavigationEnv",
-            "num_agents": 4,
-            "observation_space": "MultiDict with 'state', 'depth', 'target'",
-            "action_space": "Box(4,) for bodyrate control",
-            "max_episode_steps": 256,
-            "device": "cuda",
-            "sensors": [
-                {
-                    "type": "DEPTH",
-                    "uuid": "depth", 
-                    "resolution": [64, 64]
-                }
-            ],
-        }
-    
-    def extract_environment_context(self, env) -> Dict[str, Any]:
-        """Extract relevant context information from environment."""
-        context = {
-            "environment_class": env.__class__.__name__,
-            "num_agents": getattr(env, 'num_agent', 1),
-            "observation_space": str(env.observation_space) if hasattr(env, 'observation_space') else None,
-            "action_space": str(env.action_space) if hasattr(env, 'action_space') else None,
-            "max_episode_steps": getattr(env, 'max_episode_steps', 256),
-            "device": str(env.device) if hasattr(env, 'device') else self.device,
-            "sensors": [],
-        }
-        
-        # Extract sensor information
-        if hasattr(env, 'sensor_kwargs'):
-            for sensor_config in env.sensor_kwargs:
-                context["sensors"].append({
-                    "type": sensor_config.get("sensor_type"),
-                    "uuid": sensor_config.get("uuid"),
-                    "resolution": sensor_config.get("resolution")
-                })
-        
-        return context
     
     def get_iteration_feedback(self, iteration: int) -> str:
         """Generate feedback string based on previous iteration results."""
@@ -243,9 +232,99 @@ class EurekaVisFly:
             
         return " ".join(feedback_parts)
     
+    def _generate_feedback_with_tensorboard(self, iteration: int) -> str:
+        """
+        Generate enhanced feedback including tensorboard training curves.
+        Like real Eureka, includes detailed training metrics.
+        
+        Args:
+            iteration: Current iteration number
+            
+        Returns:
+            Feedback string with tensorboard data for the LLM
+        """
+        if iteration == 0 or not self.optimization_history:
+            return "This is the first iteration. Focus on basic task completion."
+        
+        # Get results from last iteration
+        last_results = self.optimization_history[-1]
+        
+        if not last_results:
+            return "Previous iteration had no successful results. Try simpler reward designs."
+        
+        # Sort by score and get best result
+        best_result = max(last_results, key=lambda x: x.score())
+        
+        feedback_parts = []
+        
+        # Try to load tensorboard logs for best result
+        if hasattr(best_result, 'log_dir') and best_result.log_dir:
+            try:
+                tensorboard_logs = load_tensorboard_logs(best_result.log_dir)
+                if tensorboard_logs:
+                    # Generate Eureka-style feedback with training curves
+                    tensorboard_feedback = generate_eureka_style_feedback(tensorboard_logs)
+                    feedback_parts.append(tensorboard_feedback)
+                    feedback_parts.append("")  # Add spacing
+            except Exception as e:
+                self.logger.warning(f"Could not load tensorboard logs: {e}")
+        
+        # If no tensorboard data, fall back to basic metrics
+        if not feedback_parts:
+            feedback_parts.append(f"Previous best score: {best_result.score():.3f}")
+            feedback_parts.append(f"Success rate: {best_result.success_rate:.3f}")
+            feedback_parts.append(f"Average episode length: {best_result.episode_length:.1f}")
+        
+        # Add interpretation and suggestions based on metrics
+        if best_result.success_rate < 0.3:
+            feedback_parts.append("\nThe reward function needs major improvements. Consider:")
+            feedback_parts.append("- Stronger distance-based rewards for navigation")
+            feedback_parts.append("- Better balanced collision penalties")
+            feedback_parts.append("- More effective reward shaping for exploration")
+        elif best_result.success_rate < 0.7:
+            feedback_parts.append("\nThe reward function shows promise. To improve further:")
+            feedback_parts.append("- Fine-tune the coefficients based on the training curves above")
+            feedback_parts.append("- If episode_length is high, add efficiency bonuses")
+            feedback_parts.append("- If convergence is slow, increase reward magnitudes")
+        else:
+            feedback_parts.append("\nExcellent performance! For further optimization:")
+            feedback_parts.append("- Focus on reducing episode_length while maintaining success")
+            feedback_parts.append("- Add smoothness penalties if trajectories are erratic")
+            feedback_parts.append("- Consider robustness across different scenarios")
+        
+        return "\n".join(feedback_parts)
+    
+    def _save_reward_functions(self, reward_functions: List[str], iteration: int):
+        """Save generated reward functions to disk for debugging and analysis"""
+        import os
+        from pathlib import Path
+        
+        # Use Hydra output directory if available
+        base_dir = Path("generated_rewards")
+        try:
+            from hydra.core.hydra_config import HydraConfig
+            if HydraConfig.initialized():
+                hydra_cfg = HydraConfig.get()
+                base_dir = Path(hydra_cfg.runtime.output_dir) / "generated_rewards"
+        except:
+            pass  # Fall back to current directory
+        
+        # Create iteration directory
+        iter_dir = base_dir / f"iteration_{iteration}"
+        iter_dir.mkdir(parents=True, exist_ok=True)
+        
+        for idx, reward_code in enumerate(reward_functions):
+            func_file = iter_dir / f"reward_function_{idx:02d}.py"
+            with open(func_file, 'w') as f:
+                f.write(f"# Iteration {iteration}, Function {idx}\n")
+                f.write(f"# Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                f.write(reward_code)
+        
+        self.logger.info(f"Saved {len(reward_functions)} reward functions to {iter_dir}")
+    
     def evaluate_reward_function(self, reward_code: str, identifier: str) -> Optional[TrainingResult]:
         """
-        Evaluate a single reward function by training and testing.
+        Evaluate a single reward function using subprocess isolation.
         
         Args:
             reward_code: Generated reward function code
@@ -255,92 +334,38 @@ class EurekaVisFly:
             TrainingResult object or None if evaluation failed
         """
         try:
-            start_time = time.time()
-            
-            # Create environment for training
-            requires_grad = (self.config.algorithm == "bptt")
-            env = self.create_environment(requires_grad=requires_grad)
-            
-            # Inject reward function
-            inject_generated_reward(env, reward_code)
-            
-            # Train model
-            model = train_with_generated_reward(
-                env=env,
+            # Use subprocess evaluator for isolation
+            result = self.evaluator.evaluate_reward_function(
                 reward_code=reward_code,
-                algorithm=self.config.algorithm,
-                steps=self.config.training_steps
+                identifier=identifier,
+                env_config=self.env_kwargs,
+                optimization_config={
+                    'algorithm': self.config.algorithm,
+                    'training_steps': self.config.training_steps,
+                    'evaluation_episodes': self.config.evaluation_episodes
+                },
+                env_class_path=f"{self.env_class.__module__}.{self.env_class.__name__}",
+                timeout=self.config.timeout_per_iteration
             )
             
-            if not model:
-                self.logger.warning(f"Training failed for {identifier}")
+            if result.training_successful:
+                training_result = TrainingResult(
+                    success_rate=result.success_rate,
+                    episode_length=result.episode_length,
+                    training_time=result.training_time,
+                    final_reward=result.final_reward,
+                    convergence_step=result.convergence_step,
+                    reward_code=result.reward_code,
+                    identifier=result.identifier
+                )
+                
+                return training_result
+            else:
                 return None
                 
-            # Evaluate trained model
-            evaluation_env = self.create_environment(requires_grad=False)
-            inject_generated_reward(evaluation_env, reward_code)
-            
-            success_rate, avg_episode_length, final_reward = self.evaluate_trained_model(
-                model, evaluation_env, self.config.evaluation_episodes
-            )
-            
-            training_time = time.time() - start_time
-            
-            result = TrainingResult(
-                success_rate=success_rate,
-                episode_length=avg_episode_length,
-                training_time=training_time,
-                final_reward=final_reward,
-                convergence_step=self.config.training_steps,
-                reward_code=reward_code,
-                identifier=identifier
-            )
-            
-            self.logger.info(f"{identifier}: score={result.score():.3f}, success={success_rate:.3f}")
-            return result
-            
         except Exception as e:
-            self.logger.error(f"Error evaluating reward function {identifier}: {e}")
+            self.logger.error(f"Error in subprocess evaluation for {identifier}: {e}")
             return None
-    
-    def evaluate_trained_model(self, model, env, num_episodes: int):
-        """Evaluate a trained model's performance."""
-        successes = 0
-        episode_lengths = []
-        final_rewards = []
-        
-        for episode in range(num_episodes):
-            obs = env.reset()
-            done = False
-            step_count = 0
-            episode_reward = 0
-            
-            while not done and step_count < env.max_episode_steps:
-                if hasattr(model, 'predict'):
-                    # Stable Baselines3 model
-                    action, _ = model.predict(obs, deterministic=True)
-                else:
-                    # Custom BPTT model - need to implement predict method
-                    action = model.get_action(obs)
-                    
-                obs, reward, done, info = env.step(action)
-                episode_reward += reward.mean().item() if isinstance(reward, torch.Tensor) else reward
-                step_count += 1
-            
-            # Check success condition
-            if hasattr(env, 'get_success') and env.get_success().any():
-                successes += 1
-            elif episode_reward > 0:  # Fallback success criteria
-                successes += 1
-                
-            episode_lengths.append(step_count)
-            final_rewards.append(episode_reward)
-        
-        success_rate = successes / num_episodes
-        avg_episode_length = sum(episode_lengths) / len(episode_lengths)
-        avg_final_reward = sum(final_rewards) / len(final_rewards)
-        
-        return success_rate, avg_episode_length, avg_final_reward
     
     def get_best_reward_function(self) -> Optional[str]:
         """Get the best reward function found during optimization."""
@@ -367,3 +392,12 @@ class EurekaVisFly:
             json.dump(results_data, f, indent=2)
         
         self.logger.info(f"Optimization results saved to {filepath}")
+    
+    def cleanup(self):
+        """Cleanup resources"""
+        if hasattr(self, 'evaluator'):
+            self.evaluator.cleanup()
+    
+    def __del__(self):
+        """Cleanup on deletion"""
+        self.cleanup()

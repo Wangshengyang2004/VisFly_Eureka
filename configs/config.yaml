@@ -1,9 +1,9 @@
 # VisFly-Eureka Main Configuration
-# This is the main config file that combines all components
+# This is the main config file that references specific algorithm and environment configs
 
 defaults:
-  - env: navigation_env
-  - llm: gpt4o_yunwu
+  - envs: navigation
+  - llm: gpt-4o
   - system: default_system
   - task: navigation_task
   - _self_
@@ -18,12 +18,23 @@ pipeline:
 optimization:
   iterations: 5           # Number of optimization iterations
   samples: 15            # Reward functions per iteration  
-  algorithm: "bptt"      # Training algorithm: "bptt" or "ppo"
+  algorithm: "bptt"      # Training algorithm: "bptt", "ppo", or "shac"
+  environment: "navigation"  # Environment name
   
+# Training wrapper configuration
+# Uses config files from configs/envs/{environment}/ and configs/algs/{environment}/
+training:
+  # Config file pattern: configs/algs/{environment}/{algorithm}.yaml
+  # Environment config: configs/envs/{environment}/env.yaml
+  
+  # Global overrides (optional)
+  save_dir: "./results/training"
+  comment: "eureka_experiment"
+
 # Execution settings
 execution:
+  device: "cuda"  # "cuda" or "cpu"
   use_gpu: true
-  device: "cuda"         # Override with "cpu" if needed
   num_workers: 1
   timeout_per_sample: 1800  # 30 minutes timeout per sample
   

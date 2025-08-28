@@ -1,0 +1,53 @@
+algorithm:
+  policy: CustomMultiInputPolicy
+  policy_kwargs:
+    features_extractor_class: StateTargetImageExtractor
+    features_extractor_kwargs:
+      net_arch:
+        depth:
+          layer: [128]
+        state:
+          layer: [128, 64]
+        target:
+          layer: [128, 64]
+      activation_fn: relu
+    net_arch:
+      pi: [64, 64]
+      vf: [64, 64]
+    activation_fn: relu
+    optimizer_kwargs:
+      weight_decay: 0.00001
+    share_features_extractor: false
+  
+  learning_rate: 0.001
+  device: cuda
+  gamma: 0.99
+  gae_lambda: 0.95
+  n_epochs: 10
+  n_steps: 256
+  batch_size: 4096
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  clip_range: 0.2
+  verbose: 1
+
+# Environment overrides for PPO
+env_overrides:
+  requires_grad: false
+  tensor_output: false
+  device: cuda
+  num_agent_per_scene: 48
+
+# Learning parameters
+learn:
+  total_timesteps: 10000000
+  log_interval: 1
+
+# Test parameters
+test:
+  is_fig: true
+  is_fig_save: true
+  is_video: true
+  is_video_save: true
+  render_kwargs: {}

@@ -1,0 +1,45 @@
+env:
+  num_agent_per_scene: 40  # Lower due to computational complexity
+  max_episode_steps: 600   # Longer episodes for racing
+  sensor_kwargs:
+    - sensor_type: DEPTH
+      uuid: depth
+      resolution: [64, 64]
+      position: [0, 0.2, 0.0]
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/garage_racing"
+  dynamics_kwargs:
+    dt: 0.015  # Higher frequency for precise racing control
+    ctrl_dt: 0.015
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+  visual: true
+  requires_grad: true
+  tensor_output: true
+  device: "cpu"
+  
+
+# Evaluation environment
+eval_env:
+  num_agent_per_scene: 1
+  max_episode_steps: 600
+  visual: true
+  tensor_output: true
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/garage_racing"
+    render_settings:
+      mode: fix
+      view: custom
+      resolution: [1080, 1920]
+      position: [[12.5, 0.0, 10.0], [12.5, 0.0, 2.0]]  # Track overview
+      line_width: 6.0
+      trajectory: true
+  dynamics_kwargs:
+    dt: 0.015
+    ctrl_dt: 0.015
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+  requires_grad: false
+  device: "cpu"

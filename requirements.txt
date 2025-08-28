@@ -7,7 +7,6 @@ scipy>=1.7.0
 
 # LLM Integration
 openai>=1.0.0
-anthropic>=0.3.0
 
 # Reinforcement Learning
 stable-baselines3>=1.6.0
@@ -32,12 +31,11 @@ pillow>=8.3.0
 
 # Parallel Processing
 joblib>=1.1.0
-concurrent-futures>=3.1.0
 
 # Utilities
 tqdm>=4.62.0
 click>=8.0.0
-pathlib2>=2.3.0
+# pathlib2>=2.3.0  # Not needed for Python 3.4+
 
 # Testing (optional)
 pytest>=6.2.0
@@ -47,13 +45,3 @@ pytest-cov>=3.0.0
 black>=22.0.0
 isort>=5.10.0
 flake8>=4.0.0
-
-# Note: VisFly dependencies should be installed separately
-# following the instructions in VisFly repository:
-# - habitat-sim (custom build required)
-# - CGAL (system dependency: sudo apt-get install libcgal-dev)
-# 
-# VisFly installation:
-# conda env create -f VisFly/environment.yml
-# or
-# conda env create -f VisFly/environment-ng.yaml

@@ -22,6 +22,7 @@ class TrainingResult:
     convergence_step: int
     reward_code: str = ""
     identifier: str = ""
+    log_dir: str = None  # Path to tensorboard logs
     
     def score(self) -> float:
         """

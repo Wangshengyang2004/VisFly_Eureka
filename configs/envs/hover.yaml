@@ -1,0 +1,75 @@
+env:
+  num_agent_per_scene: 100
+  max_episode_steps: 256
+  visual: false
+  requires_grad: true
+  tensor_output: true
+  device: "cpu"
+  target: [15.0, 0.0, 1.5]
+  
+  # No sensors needed for basic hover
+  sensor_kwargs: []
+  
+  # Simple scene
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/box15_empty"
+  
+  dynamics_kwargs:
+    dt: 0.03
+    ctrl_dt: 0.03
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+    
+  random_kwargs:
+    state_generator:
+      class: "Uniform"
+      kwargs:
+        - position:
+            mean: [15.0, 0.0, 1.5]
+            half: [5.0, 5.0, 0.5]
+          orientation: 
+            mean: [0.0, 0.0, 0.0]
+            half: [0.0, 0.0, 1.57]
+          velocity:
+            mean: [0.0, 0.0, 0.0]
+            half: [2.0, 2.0, 1.0]
+          angular_velocity:
+            mean: [0.0, 0.0, 0.0]
+            half: [1.0, 1.0, 1.0]
+
+# Evaluation environment
+eval_env:
+  num_agent_per_scene: 1
+  max_episode_steps: 512
+  visual: true
+  tensor_output: true
+  requires_grad: false
+  device: "cpu"
+  target: [15.0, 0.0, 1.5]
+  sensor_kwargs: []
+  
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/empty_stage"
+    render_settings:
+      mode: fix
+      view: custom
+      resolution: [1080, 1920]
+      position: [[15.0, 0.0, 10.0], [15.0, 0.0, 1.5]]  # Top-down view of hover area
+      line_width: 6.0
+      trajectory: true
+      
+  dynamics_kwargs:
+    dt: 0.03
+    ctrl_dt: 0.03
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+    
+  random_kwargs:
+    state_generator:
+      class: "Uniform"
+      kwargs:
+        - position:
+            mean: [15.0, 0.0, 1.5]
+            half: [2.0, 2.0, 0.2]

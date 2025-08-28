@@ -98,13 +98,12 @@ class LLMEngine:
         Returns:
             List of reward function code strings
         """
-        self.logger.info(f"Generating {samples} reward functions for task: {task_description}")
+        # Generate reward functions
         
         # Extract environment code without reward (like real Eureka)
         env_code = ""
         if env_class:
             env_code = extract_env_code_without_reward(env_class)
-            self.logger.info(f"Extracted environment code: {len(env_code)} characters")
         
         # Create prompts
         system_prompt = create_system_prompt()
@@ -136,7 +135,7 @@ class LLMEngine:
                 self.logger.error(f"Failed to generate batch: {e}")
                 break
         
-        self.logger.info(f"Successfully generated {len(reward_functions)} reward functions")
+        # Successfully generated reward functions
         return reward_functions
     
     def _generate_batch(self, messages: List[Dict], n_samples: int) -> List[str]:

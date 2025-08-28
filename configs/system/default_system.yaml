@@ -1,6 +1,5 @@
 # System-wide configuration
 
-# @package _global_
 system:
   # Resource management
   memory:

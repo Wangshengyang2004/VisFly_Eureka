@@ -21,6 +21,10 @@ from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 import torch
 
+# Suppress verbose third-party logging
+logging.getLogger("numexpr").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Add project paths
 PROJECT_ROOT = Path(__file__).parent.absolute()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -73,7 +77,7 @@ def validate_config(cfg: DictConfig, logger: logging.Logger):
         cfg.execution.device = "cpu"
     
     # Validate environment
-    if not cfg.env.env.name:
+    if not cfg.envs.env.name:
         raise ValueError("Environment name is required")
         
     logger.info("Configuration validation passed")
@@ -83,42 +87,29 @@ def create_environment_config(cfg: DictConfig) -> dict:
     """Create environment configuration from Hydra config"""
     
     env_config = {
-        "num_agent_per_scene": cfg.env.env.num_agent_per_scene,
-        "num_scene": cfg.env.env.num_scene,
-        "visual": cfg.env.env.visual,
-        "requires_grad": cfg.env.env.requires_grad,
-        "max_episode_steps": cfg.env.env.max_episode_steps,
+        "num_agent_per_scene": cfg.envs.env.num_agent_per_scene,
+        "num_scene": cfg.envs.env.num_scene,
+        "visual": cfg.envs.env.visual,
+        "requires_grad": cfg.envs.env.requires_grad,
+        "max_episode_steps": cfg.envs.env.max_episode_steps,
         "device": cfg.execution.device,
     }
     
     # Add sensor configuration
-    if "sensors" in cfg.env.env:
-        sensor_kwargs = []
-        for sensor_cfg in cfg.env.env.sensors:
-            sensor_kwargs.append({
-                "sensor_type": sensor_cfg.sensor_type,
-                "uuid": sensor_cfg.uuid,
-                "resolution": list(sensor_cfg.resolution)
-            })
-        env_config["sensor_kwargs"] = sensor_kwargs
+    if "sensor_kwargs" in cfg.envs.env:
+        env_config["sensor_kwargs"] = OmegaConf.to_container(cfg.envs.env.sensor_kwargs, resolve=True)
     
     # Add target configuration
-    if "target" in cfg.env.env:
-        env_config["target"] = torch.tensor([cfg.env.env.target])
+    if "target" in cfg.envs.env:
+        env_config["target"] = torch.tensor([cfg.envs.env.target])
     
     # Add dynamics configuration
-    if "dynamics" in cfg.env.env:
-        env_config["dynamics_kwargs"] = {
-            "action_type": cfg.env.env.dynamics.action_type,
-            "dt": cfg.env.env.dynamics.dt,
-            "ctrl_dt": cfg.env.env.dynamics.ctrl_dt,
-        }
+    if "dynamics_kwargs" in cfg.envs.env:
+        env_config["dynamics_kwargs"] = OmegaConf.to_container(cfg.envs.env.dynamics_kwargs, resolve=True)
     
     # Add scene configuration
-    if "scene" in cfg.env.env:
-        env_config["scene_kwargs"] = {
-            "path": cfg.env.env.scene.path
-        }
+    if "scene_kwargs" in cfg.envs.env:
+        env_config["scene_kwargs"] = OmegaConf.to_container(cfg.envs.env.scene_kwargs, resolve=True)
     
     return env_config
 
@@ -126,10 +117,26 @@ def create_environment_config(cfg: DictConfig) -> dict:
 def create_llm_config(cfg: DictConfig) -> dict:
     """Create LLM configuration from Hydra config"""
     
+    # Load API keys configuration
+    api_keys_path = os.path.join(os.path.dirname(__file__), 'configs', 'api_keys.yaml')
+    if not os.path.exists(api_keys_path):
+        raise FileNotFoundError(f"API keys configuration not found: {api_keys_path}")
+    
+    with open(api_keys_path, 'r') as f:
+        import yaml
+        api_config = yaml.safe_load(f)
+        vendor = cfg.llm.llm.vendor
+        if vendor not in api_config.get('providers', {}):
+            raise ValueError(f"Vendor '{vendor}' not found in api_keys.yaml")
+        
+        vendor_config = api_config['providers'][vendor]
+        api_key = vendor_config.get('api_key')
+        base_url = vendor_config.get('base_url')
+    
     return {
         "model": cfg.llm.llm.model,
-        "api_key": cfg.llm.llm.api_key,
-        "base_url": cfg.llm.llm.base_url,
+        "api_key": api_key,
+        "base_url": base_url,
         "temperature": cfg.llm.llm.temperature,
         "max_tokens": cfg.llm.llm.max_tokens,
         "timeout": cfg.llm.llm.timeout,
@@ -170,8 +177,8 @@ def print_configuration_summary(cfg: DictConfig, logger: logging.Logger):
     logger.info("=" * 60)
     logger.info(f"Pipeline: {cfg.pipeline.name}")
     logger.info(f"Task: {cfg.task.task.name} ({cfg.task.task.category})")
-    logger.info(f"Environment: {cfg.env.env.name}")
-    logger.info(f"LLM: {cfg.llm.llm.provider}/{cfg.llm.llm.model}")
+    logger.info(f"Environment: {cfg.envs.env.name}")
+    logger.info(f"LLM: {cfg.llm.llm.vendor}/{cfg.llm.llm.model}")
     logger.info(f"Algorithm: {cfg.optimization.algorithm.upper()}")
     logger.info(f"Device: {cfg.execution.device.upper()}")
     logger.info(f"Optimization: {cfg.optimization.iterations} iterations × {cfg.optimization.samples} samples")
@@ -265,9 +272,8 @@ def main(cfg: DictConfig) -> None:
     logger = setup_logging(cfg)
     
     try:
-        # Print configuration
+        # Print working directory only
         logger.info(f"Working directory: {os.getcwd()}")
-        logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg, resolve=True)}")
         
         # Validate configuration
         validate_config(cfg, logger)

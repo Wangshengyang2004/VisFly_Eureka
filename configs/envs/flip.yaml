@@ -1,0 +1,42 @@
+env:
+  num_agent_per_scene: 40
+  max_episode_steps: 256
+  sensor_kwargs: []  # FlipEnv uses state-based observations only
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+  dynamics_kwargs:
+    dt: 0.03
+    ctrl_dt: 0.03
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+  visual: true
+  requires_grad: true
+  tensor_output: true
+  device: "cpu"
+  flip_command: 6.28318  # 2*pi radians = 1 full rotation
+
+# Evaluation environment
+eval_env:
+  num_agent_per_scene: 1
+  max_episode_steps: 256
+  visual: true
+  tensor_output: true
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    render_settings:
+      mode: fix
+      view: custom
+      resolution: [1080, 1920]
+      position: [[0.0, -5.0, 3.0], [0.0, 0.0, 1.5]]
+      line_width: 6.0
+      trajectory: true
+  dynamics_kwargs:
+    dt: 0.03
+    ctrl_dt: 0.03
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+  requires_grad: false
+  device: "cpu"
+  flip_command: 6.28318

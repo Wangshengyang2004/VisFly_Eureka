@@ -1,6 +1,5 @@
 # Navigation task configuration
 
-# @package _global_
 task:
   name: "drone_navigation"
   category: "navigation"
@@ -26,7 +25,7 @@ task:
   # Training configuration
   training:
     algorithm: "${optimization.algorithm}"
-    steps_per_evaluation: 10000
+    steps_per_evaluation: 50
     evaluation_episodes: 20
     success_threshold: 0.8
     

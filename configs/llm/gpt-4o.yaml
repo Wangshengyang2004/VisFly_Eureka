@@ -1,11 +1,8 @@
-# GPT-4o via OpenAI official API
+# GPT-4o configuration
 
-# @package _global_
 llm:
-  provider: "openai"
+  vendor: "ifopen"
   model: "gpt-4o"
-  api_key: "${oc.env:OPENAI_API_KEY}"  # Read from environment
-  base_url: "https://api.openai.com/v1"
   
   # Generation parameters
   temperature: 0.8

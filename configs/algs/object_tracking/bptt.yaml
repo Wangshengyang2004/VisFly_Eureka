@@ -1,0 +1,46 @@
+algorithm:
+  policy: SimplePolicy
+  policy_kwargs:
+    features_extractor_class: StateExtractor
+    features_extractor_kwargs:
+      net_arch:
+        state:
+          layer: [128, 64]
+       
+    critic:
+      dist: mse
+      n_critics: 1
+      net_arch:
+        layer: [128, 64]
+    actor:
+      dist: normal
+      net_arch:
+        layer: [128, 64]
+
+    activation_fn: relu
+    optimizer_class: adam
+    optimizer_kwargs:
+      weight_decay: 0.00001
+    
+  learning_rate: 0.001
+  horizon: 80
+  tau: 0.005
+  gamma: 0.99
+  batch_size: 256
+  train_freq: 80
+  gradient_steps: 10
+  actor_gradient_steps: 1
+  device: cpu
+
+# Learning parameters
+learn:
+  total_timesteps: 20480
+  log_interval: 1
+
+# Test parameters
+test:
+  is_fig: true
+  is_fig_save: true
+  is_video: true 
+  is_video_save: true
+  render_kwargs: {}

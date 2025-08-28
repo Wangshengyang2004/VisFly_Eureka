@@ -1,0 +1,37 @@
+algorithm:
+  policy: MultiInputPolicy
+  policy_kwargs:
+    features_extractor_class: StateExtractor
+    features_extractor_kwargs:
+      net_arch:
+        state:
+          layer: [128, 64]
+    net_arch:
+      pi: [64, 64]
+      qf: [64, 64]
+    optimizer_kwargs:
+      weight_decay: 0.00001
+  
+  learning_rate: 0.001
+  horizon: 32
+  tau: 0.005
+  gamma: 0.99
+  gradient_steps: 5
+  actor_gradient_steps: 1
+  train_freq: 32
+  buffer_size: 1000000
+  batch_size: 100000
+  device: cpu
+
+# Learning parameters
+learn:
+  total_timesteps: 50000
+  log_interval: 1
+
+# Test parameters
+test:
+  is_fig: true
+  is_fig_save: true
+  is_video: true
+  is_video_save: true
+  render_kwargs: {}

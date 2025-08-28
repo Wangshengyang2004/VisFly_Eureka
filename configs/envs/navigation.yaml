@@ -1,0 +1,71 @@
+env:
+  name: "navigation"
+  num_agent_per_scene: 160
+  num_scene: 1
+  max_episode_steps: 256
+  sensor_kwargs:
+    - sensor_type: DEPTH
+      uuid: depth
+      resolution: [64, 64]
+      position: [0, 0.2, 0.0]
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+  dynamics_kwargs:
+    dt: 0.03
+    ctrl_dt: 0.03
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+  visual: true
+  requires_grad: true  # Will be set based on algorithm
+  tensor_output: false  # Will be set based on algorithm
+  device: "cpu"  # Will be overridden by algorithm config
+  random_kwargs:
+    state_generator:
+      class: "Uniform"
+      kwargs:
+        - position:
+            mean: [6.0, -2.0, 2.0]
+            half: [0.5, 0.5, 0.5]
+          orientation: 
+            mean: [0.0, 0.0, 0.0]
+            half: [0.0, 0.0, 0.0]
+          velocity:
+            mean: [0.0, 0.0, 0.0]
+            half: [0.0, 0.0, 0.0]
+          angular_velocity:
+            mean: [0.0, 0.0, 0.0]
+            half: [0.0, 0.0, 0.0]
+  target: [15.0, 0.0, 1.5]
+
+# Evaluation environment configuration
+eval_env:
+  num_agent_per_scene: 1
+  max_episode_steps: 256
+  visual: true
+  tensor_output: false
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    render_settings:
+      mode: fix
+      view: custom
+      resolution: [1080, 1920]
+      position: [[7.0, 6.8, 5.5], [7.0, 4.8, 4.5]]
+      line_width: 6.0
+      trajectory: true
+  dynamics_kwargs:
+    dt: 0.03
+    ctrl_dt: 0.03
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+  requires_grad: false
+  device: "cpu"
+  random_kwargs:
+    state_generator:
+      class: "Uniform"
+      kwargs:
+        - position:
+            mean: [6.0, -2.0, 2.0]
+            half: [0.5, 0.5, 0.5]
+  target: [15.0, 0.0, 1.5]

@@ -207,7 +207,7 @@ class GPUMonitor:
         self.stop_event.clear()
         self.monitor_thread = Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
-        self.logger.info("Started GPU monitoring")
+        # Started GPU monitoring
     
     def stop_monitoring(self):
         """Stop GPU monitoring"""
@@ -313,15 +313,7 @@ class GPUMonitor:
         else:
             gpu_infos = list(self.gpu_stats.values())
         
-        self.logger.info("=== GPU Status ===")
-        for gpu in gpu_infos:
-            self.logger.info(
-                f"GPU {gpu.device_id} ({gpu.name}): "
-                f"{gpu.memory_used}/{gpu.memory_total}MB ({gpu.memory_used/gpu.memory_total*100:.1f}%), "
-                f"Util: {gpu.utilization}%, Temp: {gpu.temperature}°C, "
-                f"Power: {gpu.power_usage}W, Processes: {len(gpu.processes)}"
-            )
-        self.logger.info("==================")
+        # GPU status available but not logging to reduce verbosity
 
 
 @dataclass 

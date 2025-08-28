@@ -1,0 +1,89 @@
+env:
+  num_agent_per_scene: 20
+  max_episode_steps: 256
+  sensor_kwargs:
+    - sensor_type: DEPTH
+      uuid: depth
+      resolution: [64, 64]
+      position: [0, 0, 0.0]
+      orientation: [0, 0, 0]
+    - sensor_type: SEMANTIC
+      uuid: semantic
+      resolution: [64, 64]
+      position: [0, 0, 0.0]
+      orientation: [0, 0, 0]
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    obj_settings:
+      dynamic_objects:
+        - position: [5, 0, 1]
+          velocity: [0.2, 0, 0]
+          object_type: "ball"
+  dynamics_kwargs:
+    dt: 0.02
+    ctrl_dt: 0.02
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+  visual: true
+  requires_grad: true
+  tensor_output: true
+  device: "cpu"
+  semantic_id: 2  # ball semantic ID
+  keep_dis: 1.5
+  box_noise: 1.0
+  random_kwargs:
+    state_generator:
+      class: "Uniform"
+      kwargs:
+        - position:
+            mean: [3.0, 0.0, 2.0]
+            half: [1.0, 1.0, 0.5]
+          orientation: 
+            mean: [0.0, 0.0, 0.0]
+            half: [0.1, 0.1, 0.5]
+          velocity:
+            mean: [0.0, 0.0, 0.0]
+            half: [0.2, 0.2, 0.2]
+          angular_velocity:
+            mean: [0.0, 0.0, 0.0]
+            half: [0.1, 0.1, 0.1]
+
+# Evaluation environment
+eval_env:
+  num_agent_per_scene: 1
+  max_episode_steps: 256
+  visual: true
+  tensor_output: true
+  scene_kwargs:
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    obj_settings:
+      dynamic_objects:
+        - position: [5, 0, 1]
+          velocity: [0.2, 0, 0]
+          object_type: "ball"
+    render_settings:
+      mode: fix
+      view: custom
+      resolution: [1080, 1920]
+      position: [[3.0, -5.0, 3.0], [5.0, 0.0, 1.0]]
+      line_width: 6.0
+      trajectory: true
+  dynamics_kwargs:
+    dt: 0.02
+    ctrl_dt: 0.02
+    action_type: "bodyrate"
+    ctrl_delay: true
+    cfg: "drone_d435i"
+  requires_grad: false
+  device: "cpu"
+  semantic_id: 2
+  keep_dis: 1.5
+  box_noise: 0.0  # No noise during evaluation
+  random_kwargs:
+    state_generator:
+      class: "Uniform"
+      kwargs:
+        - position:
+            mean: [3.0, 0.0, 2.0]
+            half: [0.5, 0.5, 0.2]
