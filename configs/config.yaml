@@ -5,6 +5,7 @@ defaults:
   - envs: navigation
   - llm: gpt-4o
   - task: navigation_task
+  - api_keys
   - _self_
 
 # Global pipeline settings
@@ -15,10 +16,11 @@ pipeline:
   
 # Optimization parameters
 optimization:
-  iterations: 5           # Number of optimization iterations
-  samples: 15            # Reward functions per iteration  
+  iterations: 2           # Number of optimization iterations
+  samples: 5            # Reward functions per iteration  
   algorithm: "bptt"      # Training algorithm: "bptt", "ppo", or "shac"
   environment: "navigation"  # Environment name
+  evaluation_episodes: 10  # Episodes for final evaluation
   
 # Training wrapper configuration
 # Uses config files from configs/envs/{environment}/ and configs/algs/{environment}/
@@ -33,8 +35,7 @@ training:
 # Execution settings
 execution:
   device: "cuda"  # "cuda" or "cpu"
-  use_gpu: true
-  num_workers: 1
+  max_workers: 4  # Maximum parallel reward evaluations
   timeout_per_sample: 1800  # 30 minutes timeout per sample
   
 # Logging and monitoring
@@ -42,16 +43,6 @@ logging:
   level: "INFO"
   save_tensorboard: true
   save_all_functions: true
-  create_visualizations: true
-  detailed_metrics: true
-
-# System settings
-system:
-  max_memory_gb: 16
-  gpu_memory_fraction: 0.8
-  parallel_processes: 1
-  max_training_time: 3600  # 1 hour per training
-  error_tolerance: 0.3
 
 # Hydra configuration
 hydra:

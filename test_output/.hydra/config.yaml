@@ -1,0 +1,145 @@
+envs:
+  env:
+    num_agent_per_scene: 160
+    num_scene: 1
+    max_episode_steps: 256
+    sensor_kwargs: []
+    scene_kwargs:
+      path: datasets/visfly-beta/configs/scenes/box15_corner_pillars
+    dynamics_kwargs:
+      dt: 0.03
+      ctrl_dt: 0.03
+      action_type: bodyrate
+      ctrl_delay: true
+      cfg: drone_d435i
+    visual: true
+    requires_grad: true
+    tensor_output: false
+    device: cpu
+    random_kwargs:
+      state_generator:
+        class: Uniform
+        kwargs:
+        - position:
+            mean:
+            - 15.0
+            - 0.0
+            - 1.0
+            half:
+            - 10
+            - 10
+            - 0.2
+    target:
+    - 15.0
+    - 0.0
+    - 1.5
+  eval_env:
+    num_agent_per_scene: 1
+    max_episode_steps: 256
+    visual: true
+    tensor_output: false
+    scene_kwargs:
+      path: datasets/visfly-beta/configs/scenes/box15_corner_pillars
+      render_settings:
+        mode: fix
+        view: custom
+        resolution:
+        - 1080
+        - 1920
+        position:
+        - - 7.0
+          - 6.8
+          - 5.5
+        - - 7.0
+          - 4.8
+          - 4.5
+        line_width: 6.0
+        trajectory: true
+    dynamics_kwargs:
+      dt: 0.03
+      ctrl_dt: 0.03
+      action_type: bodyrate
+      ctrl_delay: true
+      cfg: drone_d435i
+    requires_grad: false
+    device: cpu
+    random_kwargs:
+      state_generator:
+        class: Uniform
+        kwargs:
+        - position:
+            mean:
+            - 15.0
+            - 0.0
+            - 1.0
+            half:
+            - 10
+            - 10
+            - 0.2
+    target:
+    - 15.0
+    - 0.0
+    - 1.5
+llm:
+  llm:
+    vendor: ifopen
+    model: gpt-4o
+    temperature: 0.8
+    max_tokens: 4096
+    top_p: 1.0
+    frequency_penalty: 0.0
+    presence_penalty: 0.0
+    timeout: 120
+    max_retries: 3
+    request_delay: 1.0
+    batch_size: 5
+    use_chat_completion: true
+    system_message_enabled: true
+    conversation_memory: true
+task:
+  task:
+    name: drone_navigation
+    category: navigation
+    description: 'Navigate drone to target position efficiently while avoiding obstacles.
+
+      The drone must: 1. Reach the target position with high precision (within 0.5m)
+      2. Avoid collisions using depth sensor data  3. Maintain stable flight dynamics
+      4. Minimize episode length for efficiency 5. Handle multiple agents simultaneously
+
+      Reward function should: - Use distance-based rewards for navigation - Incorporate
+      depth sensor for obstacle avoidance - Penalize unstable flight (high angular
+      velocities) - Provide shaping rewards for smooth trajectories - Balance multiple
+      objectives appropriately'
+providers:
+  default: ifopen
+  openai:
+    api_key: YOUR_OPENAI_API_KEY_HERE
+    base_url: https://api.openai.com/v1
+  ifopen:
+    api_key: sk-SdjbKZ455Psww0ZoKvSl4as8dKai9i3CUQWikdz4w2QBA4Vq
+    base_url: https://api.ifopen.ai/v1
+  yunwu:
+    api_key: YOUR_YUNWU_API_KEY_HERE
+    base_url: https://yunwu.ai/v1
+pipeline:
+  name: visFly_eureka_optimization
+  output_dir: ./results
+  seed: 42
+optimization:
+  iterations: 1
+  samples: 1
+  algorithm: bptt
+  environment: navigation
+  training_steps: 100
+  evaluation_episodes: 10
+training:
+  save_dir: ./results/training
+  comment: eureka_experiment
+execution:
+  device: cuda
+  max_workers: 4
+  timeout_per_sample: 1800
+logging:
+  level: INFO
+  save_tensorboard: true
+  save_all_functions: true

@@ -13,22 +13,25 @@ def create_system_prompt() -> str:
     return """You are a reward function designer for VisFly drone environments. Generate complete get_reward methods for reinforcement learning.
 
 Environment Variables (always available):
-- self.position: [N, 3] drone positions
-- self.velocity: [N, 3] linear velocities  
-- self.orientation: [N, 4] quaternions
-- self.angular_velocity: [N, 3] angular velocities
-- self.target: [N, 3] target positions
-- self.collision_dis: [N] obstacle distances
-- self.sensor_obs['depth']: [N, H, W] depth camera
-- self._step_count: current step
-- self.num_agent: agent count
+- self.position: torch.Tensor [N, 3] drone positions
+- self.velocity: torch.Tensor [N, 3] linear velocities  
+- self.orientation: torch.Tensor [N, 4] quaternions
+- self.angular_velocity: torch.Tensor [N, 3] angular velocities
+- self.target: torch.Tensor [N, 3] target positions
+- self.collision_dis: torch.Tensor [N] obstacle distances
+- self.sensor_obs['depth']: numpy.ndarray [N, H, W] depth camera (from habitat)
+- self._step_count: int - current step
+- self.num_agent: int - agent count
+- self.device: torch device for tensors
 
 Requirements:
 1. Return complete get_reward(self) method
-2. Use torch operations only
+2. Use torch operations only (available as 'torch')
 3. Return shape [N] tensor
-4. No imports needed (torch/th available)
-5. Be confident - all listed variables exist, use them directly
+4. IMPORTANT: self.sensor_obs['depth'] is numpy array - convert ONCE at the start:
+   depth_tensor = torch.from_numpy(self.sensor_obs['depth']).to(self.device)
+5. Do NOT convert other self.* attributes - they are already torch tensors
+6. Be confident - all listed variables exist, use them directly
 
 BPTT Gradient Tips (CRITICAL):
 - ALWAYS use (self.velocity - 0) to avoid in-place gradient issues
@@ -41,6 +44,10 @@ Common Patterns:
 - Velocity penalty: -torch.norm(self.velocity - 0, dim=1) * 0.01
 - Collision: -1.0 / (self.collision_dis + 0.2)
 - Stability: -torch.norm(self.angular_velocity - 0, dim=1) * 0.001
+- Depth sensor usage:
+  depth_tensor = torch.from_numpy(self.sensor_obs['depth']).to(self.device)
+  min_depth = torch.min(depth_tensor.view(depth_tensor.size(0), -1), dim=1)[0]
+  obstacle_penalty = -1.0 / (min_depth + 0.1)
 
 Numerical Safety:
 - Use torch.clamp(x, min=1e-8) only for division denominators
@@ -51,7 +58,7 @@ Numerical Safety:
 def get_navigation_env_code() -> str:
     """
     Get pre-extracted NavigationEnv code without reward function (avoids blocking environment creation).
-    
+
     Returns:
         NavigationEnv source code with get_reward method stripped
     """
@@ -60,7 +67,7 @@ from habitat_sim.sensor import SensorType
 
 from VisFly.envs.base.droneGymEnv import DroneGymEnvsBase
 from typing import Optional, Dict
-import torch as th
+import torch
 from habitat_sim import SensorType
 from gymnasium import spaces
 
@@ -75,15 +82,15 @@ def get_along_vertical_vector(base, obj):
     BPTT-safe: no in-place operations that break gradient computation
     \"\"\"
     # Safe norm computation with minimum clipping to avoid zero gradients
-    base_norm = th.clamp(base.norm(dim=1, keepdim=True), min=1e-8)
-    obj_norm = th.clamp(obj.norm(dim=1, keepdim=True), min=1e-8)
+    base_norm = torch.clamp(base.norm(dim=1, keepdim=True), min=1e-8)
+    obj_norm = torch.clamp(obj.norm(dim=1, keepdim=True), min=1e-8)
 
     # Safe division for normalization
     base_normal = base / base_norm
     along_obj_norm = (obj * base_normal).sum(dim=1, keepdim=True)
     along_vector = base_normal * along_obj_norm
     vertical_vector = obj - along_vector
-    vertical_obj_norm = th.clamp(vertical_vector.norm(dim=1), min=1e-8)
+    vertical_obj_norm = torch.clamp(vertical_vector.norm(dim=1), min=1e-8)
 
     # Ensure we return new tensors to avoid in-place modification issues  
     return along_obj_norm.squeeze() + 0.0, vertical_obj_norm + 0.0, base_norm.squeeze() + 0.0
@@ -102,7 +109,7 @@ class NavigationEnv(DroneGymEnvsBase):
         scene_kwargs: dict = {},
         sensor_kwargs: list = [],
         device: str = "cpu",
-        target: Optional[th.Tensor] = None,
+        target: Optional[torch.Tensor] = None,
         max_episode_steps: int = 256,
         tensor_output: bool = False,
     ):
@@ -133,7 +140,7 @@ class NavigationEnv(DroneGymEnvsBase):
 
         # Fix device mismatch: ensure target is on correct device
         target_pos = [15, 0.0, 1.5] if target is None else target
-        self.target = th.ones((self.num_envs, 1), device=self.device) @ th.as_tensor(
+        self.target = torch.ones((self.num_envs, 1), device=self.device) @ torch.as_tensor(
             target_pos, device=self.device
         ).reshape(1, -1)
         self.observation_space["state"] = spaces.Box(
@@ -158,7 +165,7 @@ class NavigationEnv(DroneGymEnvsBase):
 
         # State observations
         obs = {
-            "state": th.cat(
+            "state": torch.cat(
                 [
                     head_target,
                     head_velocity,
@@ -181,7 +188,7 @@ class NavigationEnv(DroneGymEnvsBase):
 
         return obs
 
-    def get_reward(self) -> th.Tensor:
+    def get_reward(self) -> torch.Tensor:
         \"\"\"
         Reward function to be implemented by Eureka.
         
@@ -203,15 +210,15 @@ class NavigationEnv(DroneGymEnvsBase):
             torch.Tensor [N] - reward for each agent
         \"\"\"
         # TODO: Implement reward function
-        return th.zeros(self.num_envs, device=self.device)
+        return torch.zeros(self.num_envs, device=self.device)
     
-    def get_failure(self) -> th.Tensor:
+    def get_failure(self) -> torch.Tensor:
         return self.is_collision
 
-    def get_success(self) -> th.Tensor:
+    def get_success(self) -> torch.Tensor:
         # Check if agent reaches within threshold of target
-        target_distance = th.norm(self.position - self.target, dim=1)
-        velocity_magnitude = th.norm(self.velocity, dim=1)
+        target_distance = torch.norm(self.position - self.target, dim=1)
+        velocity_magnitude = torch.norm(self.velocity, dim=1)
         
         # Success criteria: within distance threshold AND low velocity (stable)
         distance_success = target_distance < 0.5  # Within 0.5m of target
@@ -230,15 +237,15 @@ class NavigationEnv(DroneGymEnvsBase):
 def extract_env_code_without_reward(env_class) -> str:
     """
     Extract environment code with reward function removed.
-    
+
     Args:
         env_class: Environment class to extract code from
-        
+
     Returns:
         Environment source code with get_reward method stripped
     """
     # Use pre-extracted code for NavigationEnv
-    if env_class.__name__ == 'NavigationEnv':
+    if env_class.__name__ == "NavigationEnv":
         return get_navigation_env_code()
     else:
         # Fallback for other environments
@@ -249,22 +256,22 @@ def create_user_prompt(
     task_description: str,
     context_info: Dict[str, Any],
     feedback: str = "",
-    env_code: str = ""
+    env_code: str = "",
 ) -> str:
     """
     Create a user prompt for a specific task and context (like real Eureka).
-    
+
     Args:
         task_description: Natural language description of the task
         context_info: Environment-specific context information
         feedback: Feedback from previous iterations
         env_code: Complete environment code with reward stripped
-        
+
     Returns:
         Formatted user prompt string
     """
     prompt_parts = []
-    
+
     # Environment code (main component like real Eureka)
     if env_code:
         prompt_parts.append("The Python environment is:")
@@ -272,26 +279,26 @@ def create_user_prompt(
         prompt_parts.append(env_code)
         prompt_parts.append("```")
         prompt_parts.append("")
-    
-    # Task description  
-    prompt_parts.append(f"Write a reward function for the following task: {task_description}")
-    
+
+    # Task description
+    prompt_parts.append(
+        f"Write a reward function for the following task: {task_description}"
+    )
+
     # Previous iteration feedback (if any)
     if feedback:
         prompt_parts.append(f"\nFeedback from previous attempts:")
         prompt_parts.append(feedback)
-    
+
     # Request (simplified like real Eureka)
     prompt_parts.append("""
 Please provide only the complete get_reward(self) method implementation.""")
-    
+
     return "\n".join(prompt_parts)
 
 
 def create_improvement_prompt(
-    original_code: str,
-    performance_issues: str,
-    task_description: str
+    original_code: str, performance_issues: str, task_description: str
 ) -> str:
     """Create prompt for improving existing reward function."""
     return f"""Task: {task_description}
@@ -314,30 +321,34 @@ def create_context_aware_prompt(
     task_description: str,
     environment_observations: Dict[str, Any],
     sensor_data_shapes: Dict[str, tuple],
-    previous_rewards: list = None
+    previous_rewards: list = None,
 ) -> str:
     """Create context-aware prompt using actual environment observations."""
     prompt_parts = [f"Task: {task_description}"]
-    
+
     # Direct environment state (confident about tensor shapes)
     if environment_observations:
         prompt_parts.append("\nEnvironment State:")
         for key, value in environment_observations.items():
             # Assume tensors have shape attribute
             prompt_parts.append(f"- {key}: shape {value.shape}")
-    
+
     # Sensor shapes
     if sensor_data_shapes:
         prompt_parts.append("\nSensor Shapes:")
         for sensor_name, shape in sensor_data_shapes.items():
             prompt_parts.append(f"- {sensor_name}: {shape}")
-    
+
     # Previous attempts
     if previous_rewards:
-        prompt_parts.append(f"\nTried {len(previous_rewards)} functions. Generate a different approach.")
-    
-    prompt_parts.append("\nUse (self.velocity - 0) and (self.angular_velocity - 0) for BPTT.\nGenerate get_reward(self):")
-    
+        prompt_parts.append(
+            f"\nTried {len(previous_rewards)} functions. Generate a different approach."
+        )
+
+    prompt_parts.append(
+        "\nUse (self.velocity - 0) and (self.angular_velocity - 0) for BPTT.\nGenerate get_reward(self):"
+    )
+
     return "\n".join(prompt_parts)
 
 
@@ -358,41 +369,49 @@ Tracking: Maintain relative position, smooth following, visual tracking."""
 def get_task_specific_prompt_suffix(task_description: str) -> str:
     """
     Get task-specific prompt suffix based on task description.
-    
+
     Args:
         task_description: Natural language task description
-        
+
     Returns:
         Task-specific prompt suffix
     """
     task_lower = task_description.lower()
-    
-    if any(keyword in task_lower for keyword in ["navigate", "navigation", "path", "waypoint"]):
+
+    if any(
+        keyword in task_lower
+        for keyword in ["navigate", "navigation", "path", "waypoint"]
+    ):
         return NAVIGATION_PROMPT_SUFFIX
     elif any(keyword in task_lower for keyword in ["race", "racing", "speed", "fast"]):
         return RACING_PROMPT_SUFFIX
-    elif any(keyword in task_lower for keyword in ["hover", "hovering", "stable", "stationary"]):
+    elif any(
+        keyword in task_lower
+        for keyword in ["hover", "hovering", "stable", "stationary"]
+    ):
         return HOVERING_PROMPT_SUFFIX
-    elif any(keyword in task_lower for keyword in ["track", "tracking", "follow", "chase"]):
+    elif any(
+        keyword in task_lower for keyword in ["track", "tracking", "follow", "chase"]
+    ):
         return TRACKING_PROMPT_SUFFIX
     else:
         return ""
 
 
 def create_multi_objective_prompt(
-    primary_objective: str,
-    secondary_objectives: list,
-    constraints: list = None
+    primary_objective: str, secondary_objectives: list, constraints: list = None
 ) -> str:
     """Create multi-objective reward prompt."""
     parts = [f"Primary: {primary_objective}"]
-    
+
     if secondary_objectives:
         parts.append("Secondary: " + ", ".join(secondary_objectives))
-    
+
     if constraints:
         parts.append("Constraints: " + ", ".join(constraints))
-    
-    parts.append("\nBalance objectives with weights. Use (self.velocity - 0) for BPTT.\nGenerate get_reward(self):")
-    
+
+    parts.append(
+        "\nBalance objectives with weights. Use (self.velocity - 0) for BPTT.\nGenerate get_reward(self):"
+    )
+
     return "\n".join(parts)

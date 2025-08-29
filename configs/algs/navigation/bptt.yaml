@@ -40,8 +40,8 @@ algorithm:
 
 # Learning/training parameters
 learn:
-  total_timesteps: 50000000
-  log_interval: 20
+  total_timesteps: 500000
+  log_interval: 200
 
 # Test parameters
 test:
