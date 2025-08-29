@@ -13,7 +13,7 @@ import time
 from .llm.llm_engine import LLMEngine
 from .utils.training_utils import TrainingResult
 from .core.models import OptimizationConfig
-from .core.evaluation import extract_environment_context_minimal
+from .core.model_evaluation import extract_environment_context_minimal
 from .core.subprocess_evaluator import SubprocessRewardEvaluator
 from .utils.tensorboard_utils import (
     load_tensorboard_logs,

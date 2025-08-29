@@ -25,13 +25,14 @@ Environment Variables (always available):
 - self.device: torch device for tensors
 
 Requirements:
-1. Return complete get_reward(self) method
-2. Use torch operations only (available as 'torch')
-3. Return shape [N] tensor
-4. IMPORTANT: self.sensor_obs['depth'] is numpy array - convert ONCE at the start:
+1. Return complete get_reward(self) method  
+2. Use torch operations only (imported as 'torch')
+3. Function signature: def get_reward(self) -> torch.Tensor:
+4. Return shape [N] tensor
+5. IMPORTANT: self.sensor_obs['depth'] is numpy array - convert ONCE at the start:
    depth_tensor = torch.from_numpy(self.sensor_obs['depth']).to(self.device)
-5. Do NOT convert other self.* attributes - they are already torch tensors
-6. Be confident - all listed variables exist, use them directly
+6. Do NOT convert other self.* attributes - they are already torch tensors
+7. Be confident - all listed variables exist, use them directly
 
 BPTT Gradient Tips (CRITICAL):
 - ALWAYS use (self.velocity - 0) to avoid in-place gradient issues
@@ -44,9 +45,10 @@ Common Patterns:
 - Velocity penalty: -torch.norm(self.velocity - 0, dim=1) * 0.01
 - Collision: -1.0 / (self.collision_dis + 0.2)
 - Stability: -torch.norm(self.angular_velocity - 0, dim=1) * 0.001
+- Step penalty: -0.01 * torch.ones(self.num_agent, device=self.device)
 - Depth sensor usage:
   depth_tensor = torch.from_numpy(self.sensor_obs['depth']).to(self.device)
-  min_depth = torch.min(depth_tensor.view(depth_tensor.size(0), -1), dim=1)[0]
+  min_depth, _ = torch.min(depth_tensor.view(depth_tensor.size(0), -1), dim=1)
   obstacle_penalty = -1.0 / (min_depth + 0.1)
 
 Numerical Safety:
@@ -55,183 +57,39 @@ Numerical Safety:
 - Trust the environment structure"""
 
 
-def get_navigation_env_code() -> str:
+def load_environment_code(env_path: str) -> str:
     """
-    Get pre-extracted NavigationEnv code without reward function (avoids blocking environment creation).
+    Load environment code dynamically from the actual file.
+
+    Args:
+        env_path: Path to the environment file
 
     Returns:
-        NavigationEnv source code with get_reward method stripped
+        Environment source code with get_reward method stripped
     """
-    return """import numpy as np
-from habitat_sim.sensor import SensorType
-
-from VisFly.envs.base.droneGymEnv import DroneGymEnvsBase
-from typing import Optional, Dict
-import torch
-from habitat_sim import SensorType
-from gymnasium import spaces
-
-from VisFly.utils.type import TensorDict
-from math import pi
-from typing import Union
-
-
-def get_along_vertical_vector(base, obj):
-    \"\"\"
-    Decompose obj vector into components along and perpendicular to base vector
-    BPTT-safe: no in-place operations that break gradient computation
-    \"\"\"
-    # Safe norm computation with minimum clipping to avoid zero gradients
-    base_norm = torch.clamp(base.norm(dim=1, keepdim=True), min=1e-8)
-    obj_norm = torch.clamp(obj.norm(dim=1, keepdim=True), min=1e-8)
-
-    # Safe division for normalization
-    base_normal = base / base_norm
-    along_obj_norm = (obj * base_normal).sum(dim=1, keepdim=True)
-    along_vector = base_normal * along_obj_norm
-    vertical_vector = obj - along_vector
-    vertical_obj_norm = torch.clamp(vertical_vector.norm(dim=1), min=1e-8)
-
-    # Ensure we return new tensors to avoid in-place modification issues  
-    return along_obj_norm.squeeze() + 0.0, vertical_obj_norm + 0.0, base_norm.squeeze() + 0.0
-
-
-class NavigationEnv(DroneGymEnvsBase):
-    def __init__(
-        self,
-        num_agent_per_scene: int = 1,
-        num_scene: int = 1,
-        seed: int = 42,
-        visual: bool = True,
-        requires_grad: bool = False,
-        random_kwargs: dict = {},
-        dynamics_kwargs: dict = {},
-        scene_kwargs: dict = {},
-        sensor_kwargs: list = [],
-        device: str = "cpu",
-        target: Optional[torch.Tensor] = None,
-        max_episode_steps: int = 256,
-        tensor_output: bool = False,
-    ):
-        # Ensure depth sensor is always available for NavigationEnv
-        if not sensor_kwargs:
-            sensor_kwargs = [
-                {
-                    "sensor_type": SensorType.DEPTH,
-                    "uuid": "depth",
-                    "resolution": [64, 64],
-                }
-            ]
-
-        super().__init__(
-            num_agent_per_scene=num_agent_per_scene,
-            num_scene=num_scene,
-            seed=seed,
-            visual=visual,
-            requires_grad=requires_grad,
-            random_kwargs=random_kwargs,
-            dynamics_kwargs=dynamics_kwargs,
-            scene_kwargs=scene_kwargs,
-            sensor_kwargs=sensor_kwargs,
-            device=device,
-            max_episode_steps=max_episode_steps,
-            tensor_output=tensor_output,
-        )
-
-        # Fix device mismatch: ensure target is on correct device
-        target_pos = [15, 0.0, 1.5] if target is None else target
-        self.target = torch.ones((self.num_envs, 1), device=self.device) @ torch.as_tensor(
-            target_pos, device=self.device
-        ).reshape(1, -1)
-        self.observation_space["state"] = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(13,), dtype=np.float32
-        )
-        self.observation_space["depth"] = spaces.Box(
-            low=0.0, high=1.0, shape=(1, 64, 64), dtype=np.float32
-        )
-        self.observation_space["target"] = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32
-        )
-
-
-    def get_observation(
-                self,
-                indices=None
-        ) -> Dict:
-        orientation = self.envs.dynamics._orientation.clone()
-        rela = self.target - self.position
-        head_target = orientation.world_to_head(rela.T).T
-        head_velocity = orientation.world_to_head((self.velocity - 0).T).T  # Note: (velocity - 0) for BPTT gradient safety
-
-        # State observations
-        obs = {
-            "state": torch.cat(
-                [
-                    head_target,
-                    head_velocity,
-                    self.angular_velocity,
-                    self.orientation,
-                ],
-                dim=1,
-            )
-        }
-
-        # Depth sensor observations
-        if "depth" in self.obs_keys:
-            depth_obs = self.envs.get_sensor_observation(
-                self.observation_indices if indices is None else indices
-            )["depth"]
-            obs["depth"] = depth_obs
-
-        # Target vector for reward function
-        obs["target"] = self.target
-
-        return obs
-
-    def get_reward(self) -> torch.Tensor:
-        \"\"\"
-        Reward function to be implemented by Eureka.
-        
-        Available attributes:
-        - self.position: torch.Tensor [N, 3] - drone positions
-        - self.velocity: torch.Tensor [N, 3] - linear velocities  
-        - self.target: torch.Tensor [N, 3] - target positions
-        - self.collision_vector: torch.Tensor [N, 3] - collision avoidance vector
-        - self.angular_velocity: torch.Tensor [N, 3] - angular velocities
-        - self.direction: torch.Tensor [N, 3] - heading direction
-        - self._step_count: int - current episode step
-        - self.max_episode_steps: int - maximum steps per episode
-        
-        Sensor observations via self.get_observation():
-        - 'depth': torch.Tensor [N, H, W] - depth camera
-        - 'state': torch.Tensor [N, 13] - state vector
-        
-        Returns:
-            torch.Tensor [N] - reward for each agent
-        \"\"\"
-        # TODO: Implement reward function
-        return torch.zeros(self.num_envs, device=self.device)
+    import re
+    from pathlib import Path
     
-    def get_failure(self) -> torch.Tensor:
-        return self.is_collision
-
-    def get_success(self) -> torch.Tensor:
-        # Check if agent reaches within threshold of target
-        target_distance = torch.norm(self.position - self.target, dim=1)
-        velocity_magnitude = torch.norm(self.velocity, dim=1)
-        
-        # Success criteria: within distance threshold AND low velocity (stable)
-        distance_success = target_distance < 0.5  # Within 0.5m of target
-        velocity_success = velocity_magnitude < 0.1  # Moving slowly (stable)
-        
-        return distance_success & velocity_success
-
-    def reset(self, indices=None):
-        \"\"\"Reset environment with new target and random initial positions\"\"\"
-        super().reset(indices)
-        # Environment is well-defined, target is always available
-        return self.get_observation()
-"""
+    # Read the environment file
+    env_file = Path(env_path)
+    if not env_file.exists():
+        return f"# Could not load environment from {env_path}"
+    
+    with open(env_file, 'r') as f:
+        code = f.read()
+    
+    # Remove the get_reward method implementation but keep the signature
+    # Pattern to match the entire get_reward method
+    pattern = r'(def get_reward\(self[^)]*\)[^:]*:)(.*?)(?=\n    def |\n\nclass |\Z)'
+    
+    def replace_reward(match):
+        signature = match.group(1)
+        return f"{signature}\n        # TODO: Implement reward function\n        return torch.zeros(self.num_envs, device=self.device)"
+    
+    # Replace the get_reward implementation
+    code = re.sub(pattern, replace_reward, code, flags=re.DOTALL)
+    
+    return code
 
 
 def extract_env_code_without_reward(env_class) -> str:
@@ -244,12 +102,16 @@ def extract_env_code_without_reward(env_class) -> str:
     Returns:
         Environment source code with get_reward method stripped
     """
-    # Use pre-extracted code for NavigationEnv
-    if env_class.__name__ == "NavigationEnv":
-        return get_navigation_env_code()
-    else:
-        # Fallback for other environments
-        return f"# Environment: {env_class.__name__}\n# Pre-extracted code not available for this environment type."
+    import inspect
+    from pathlib import Path
+    
+    # Get the source file of the environment class
+    try:
+        source_file = inspect.getfile(env_class)
+        return load_environment_code(source_file)
+    except Exception as e:
+        # Fallback if we can't get the source
+        return f"# Environment: {env_class.__name__}\n# Could not extract source: {e}"
 
 
 def create_user_prompt(
