@@ -5,9 +5,9 @@ llm:
   model: "gpt-4o"
   
   # Generation parameters
-  temperature: 0.8
-  max_tokens: 4096
-  top_p: 1.0
+  temperature: 1.0
+  max_tokens: 8192
+  top_p: 0.95
   frequency_penalty: 0.0
   presence_penalty: 0.0
   
@@ -21,3 +21,9 @@ llm:
   use_chat_completion: true
   system_message_enabled: true
   conversation_memory: true
+  
+  # Batching strategy
+  batching:
+    supports_n_parameter: true     # OpenAI supports n parameter
+    strategy: "n_parameter"        # Options: "n_parameter", "sequential", "async", "multiprocessing"
+    max_concurrent: 10             # For async/multiprocessing strategies

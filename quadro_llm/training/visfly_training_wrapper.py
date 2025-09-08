@@ -10,10 +10,10 @@ with clean configuration management.
 import sys
 import os
 import time
+import logging
 import torch
 import torch as th
 import numpy as np
-import traceback
 import argparse
 import yaml
 from pathlib import Path
@@ -27,13 +27,13 @@ sys.path.append(str(visfly_path))
 sys.path.append(str(project_root))
 
 # Import VisFly components
-from VisFly.utils.policies import extractors
 from VisFly.utils.algorithms.BPTT import BPTT
 from VisFly.utils.algorithms.PPO import PPO
 from VisFly.utils.algorithms.shac import TemporalDifferBase as SHAC
-from VisFly.utils import savers
 from VisFly.envs.NavigationEnv import NavigationEnv
-from VisFly.utils.type import Uniform
+
+# Module logger
+logger = logging.getLogger(__name__)
 
 # Disable gradient anomaly detection for physics-based algorithms
 torch.autograd.set_detect_anomaly(False)
@@ -106,9 +106,9 @@ def load_config_files(env_name: str, algorithm: str):
     with open(alg_config_path, "r") as f:
         alg_config = yaml.safe_load(f)
 
-    print(f"✅ Loaded configs:")
-    print(f"  Environment: {env_config_path}")
-    print(f"  Algorithm: {alg_config_path}")
+    logger.info("Loaded configs")
+    logger.info("  Environment: %s", env_config_path)
+    logger.info("  Algorithm: %s", alg_config_path)
 
     return env_config, alg_config
 
@@ -121,29 +121,29 @@ def apply_config_overrides(env_config: dict, alg_config: dict, args):
         env_overrides = alg_config["env_overrides"]
         for key, value in env_overrides.items():
             env_config["env"][key] = value
-            print(f"🔧 Applied env override: {key} = {value}")
+            logger.info("Applied env override: %s = %s", key, value)
 
     # Apply command line overrides
     if args.learning_steps is not None:
         alg_config["learn"]["total_timesteps"] = args.learning_steps
-        print(f"🔧 Override learning_steps: {args.learning_steps}")
+        logger.info("Override learning_steps: %s", args.learning_steps)
 
     if args.num_agents is not None:
         env_config["env"]["num_agent_per_scene"] = args.num_agents
-        print(f"🔧 Override num_agents: {args.num_agents}")
+        logger.info("Override num_agents: %s", args.num_agents)
 
     if args.device is not None:
         env_config["env"]["device"] = args.device
         alg_config["algorithm"]["device"] = args.device
-        print(f"🔧 Override device: {args.device}")
+        logger.info("Override device: %s", args.device)
 
     if args.seed is not None:
         alg_config["algorithm"]["seed"] = args.seed
-        print(f"🔧 Override seed: {args.seed}")
+        logger.info("Override seed: %s", args.seed)
 
     if args.comment is not None:
         alg_config["comment"] = args.comment
-        print(f"🔧 Set comment: {args.comment}")
+        logger.info("Set comment: %s", args.comment)
 
     return env_config, alg_config
 
@@ -157,17 +157,16 @@ def inject_reward_function(reward_function_code: str, env_class):
             exec(reward_function_code, exec_globals)
             env_class.get_reward = exec_globals["get_reward"]
 
-            print(f"✅ Successfully injected custom reward function")
+            logger.info("Successfully injected custom reward function")
 
         except Exception as e:
-            print(f"❌ Failed to inject reward function: {e}")
-            traceback.print_exc()
+            logger.exception("Failed to inject reward function: %s", e)
             raise
 
 
 def create_environment(env_config: dict, env_name: str):
     """Create environment from config"""
-    print(f"🌍 Creating {env_name} environment...")
+    logger.info("Creating %s environment...", env_name)
 
     # Convert target to tensor if it's a list
     if "target" in env_config["env"] and isinstance(env_config["env"]["target"], list):
@@ -179,8 +178,9 @@ def create_environment(env_config: dict, env_name: str):
     else:
         raise ValueError(f"Unsupported environment: {env_name}")
 
-    print(
-        f"✅ Environment created with {env_config['env']['num_agent_per_scene']} agents"
+    logger.info(
+        "Environment created with %s agents",
+        env_config['env']['num_agent_per_scene'],
     )
     return env
 
@@ -188,7 +188,7 @@ def create_environment(env_config: dict, env_name: str):
 def create_algorithm(algorithm: str, alg_config: dict, env, save_folder: str):
     """Create algorithm from config"""
 
-    print(f"🧠 Creating {algorithm.upper()} algorithm...")
+    logger.info("Creating %s algorithm...", algorithm.upper())
 
     algorithm_params = alg_config["algorithm"].copy()
     comment = alg_config.get("comment", f"{algorithm}_experiment")
@@ -203,8 +203,15 @@ def create_algorithm(algorithm: str, alg_config: dict, env, save_folder: str):
         except AttributeError:
             pass
 
+        # Ensure tensorboard log directory exists
+        import os
+        tensorboard_dir = os.path.join(save_folder, "tensorboard")
+        os.makedirs(tensorboard_dir, exist_ok=True)
+        
+        logger.info(f"TensorBoard logs will be saved to: {tensorboard_dir}")
+        
         return PPO(
-            env=env, comment=comment, tensorboard_log=save_folder, **algorithm_params
+            env=env, comment=comment, tensorboard_log=tensorboard_dir, **algorithm_params
         )
 
     elif algorithm == "shac":
@@ -214,10 +221,33 @@ def create_algorithm(algorithm: str, alg_config: dict, env, save_folder: str):
         raise ValueError(f"Unsupported algorithm: {algorithm}")
 
 
+def validate_critical_config(env_config: dict, alg_config: dict) -> None:
+    """Minimal validation for essential fields; raises ValueError on issues."""
+    missing = []
+    # env config
+    if not isinstance(env_config, dict) or "env" not in env_config:
+        raise ValueError("env_config must contain 'env' section")
+    env_required = ["num_agent_per_scene", "device"]
+    for k in env_required:
+        if k not in env_config["env"]:
+            missing.append(f"env.{k}")
+
+    # algorithm config
+    if not isinstance(alg_config, dict):
+        raise ValueError("alg_config must be a dict")
+    if "learn" not in alg_config or "total_timesteps" not in alg_config["learn"]:
+        missing.append("learn.total_timesteps")
+    if "algorithm" not in alg_config:
+        missing.append("algorithm section")
+
+    if missing:
+        raise ValueError("Missing required config keys: " + ", ".join(missing))
+
+
 def run_training(args):
     """Run the training with config-based setup"""
 
-    print(f"🚀 Starting training: {args.env} with {args.algorithm.upper()}")
+    logger.info("Starting training: %s with %s", args.env, args.algorithm.upper())
 
     try:
         # Load config files
@@ -225,6 +255,9 @@ def run_training(args):
 
         # Apply overrides
         env_config, alg_config = apply_config_overrides(env_config, alg_config, args)
+
+        # Validate configs
+        validate_critical_config(env_config, alg_config)
 
         # Setup save directory
         if args.save_dir:
@@ -237,7 +270,7 @@ def run_training(args):
         env = create_environment(env_config, args.env)
 
         # Reset environment to initialize
-        print("🔄 Resetting environment...")
+        logger.info("Resetting environment...")
         env.reset()
 
         # Load custom reward function if provided
@@ -252,8 +285,9 @@ def run_training(args):
         if args.train:
             # Train the model
             learning_params = alg_config["learn"]
-            print(
-                f"🏃 Starting training for {learning_params['total_timesteps']} steps..."
+            logger.info(
+                "Starting training for %s steps...",
+                learning_params['total_timesteps'],
             )
 
             start_time = time.time()
@@ -266,7 +300,7 @@ def run_training(args):
             model.save()
 
             training_time = time.time() - start_time
-            print(f"✅ Training completed in {training_time:.2f} seconds")
+            logger.info("Training completed in %.2f seconds", training_time)
 
             # Save training info
             import json
@@ -278,7 +312,7 @@ def run_training(args):
                 "training_time": training_time,
                 "total_timesteps": learning_params["total_timesteps"],
                 "config_files": {
-                    "env": f"configs/envs/{args.env}/env.yaml",
+                    "env": f"configs/envs/{args.env}.yaml",
                     "algorithm": f"configs/algs/{args.env}/{args.algorithm}.yaml",
                 },
             }
@@ -286,44 +320,43 @@ def run_training(args):
             with open(info_file, "w") as f:
                 json.dump(training_info, f, indent=2)
 
-            print(f"💾 Saved training info to {info_file}")
+            logger.info("Saved training info to %s", info_file)
 
         else:
-            print("🧪 Test mode - skipping training")
+            logger.info("Test mode - skipping training")
 
         return True
 
     except Exception as e:
-        print(f"❌ Training failed: {e}")
-        traceback.print_exc()
+        logger.exception("Training failed: %s", e)
         return False
 
 
 def main():
     """Main entry point"""
-    print("=" * 60)
-    print("🚁 VisFly Training Wrapper v2 (Config-Based)")
-    print("=" * 60)
+    # Configure root logger if not configured by parent
+    if not logging.getLogger().hasHandlers():
+        logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+    logger.info("VisFly Training Wrapper v2 (Config-Based)")
 
     args = parse_args()
 
-    print(f"🎯 Configuration:")
-    print(f"  Environment: {args.env}")
-    print(f"  Algorithm: {args.algorithm}")
-    print(f"  Mode: {'Training' if args.train else 'Testing'}")
+    logger.info("Configuration:")
+    logger.info("  Environment: %s", args.env)
+    logger.info("  Algorithm: %s", args.algorithm)
+    logger.info("  Mode: %s", 'Training' if args.train else 'Testing')
 
     try:
         success = run_training(args)
         if success:
-            print("✅ Operation completed successfully!")
+            logger.info("Operation completed successfully")
             return 0
         else:
-            print("❌ Operation failed!")
+            logger.error("Operation failed")
             return 1
 
     except Exception as e:
-        print(f"❌ Wrapper failed: {e}")
-        traceback.print_exc()
+        logger.exception("Wrapper failed: %s", e)
         return 1
 
 

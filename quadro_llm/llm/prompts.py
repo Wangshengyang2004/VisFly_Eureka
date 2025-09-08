@@ -18,38 +18,31 @@ Environment Variables (always available):
 - self.orientation: torch.Tensor [N, 4] quaternions
 - self.angular_velocity: torch.Tensor [N, 3] angular velocities
 - self.target: torch.Tensor [N, 3] target positions
-- self.collision_dis: torch.Tensor [N] obstacle distances
-- self.sensor_obs['depth']: numpy.ndarray [N, H, W] depth camera (from habitat)
+- self.collision_dis: torch.Tensor [N] obstacle distances (use this for collision avoidance, not depth sensor)
 - self._step_count: int - current step
 - self.num_agent: int - agent count
-- self.device: torch device for tensors
 
 Requirements:
 1. Return complete get_reward(self) method  
 2. Use torch operations only (imported as 'torch')
 3. Function signature: def get_reward(self) -> torch.Tensor:
-4. Return shape [N] tensor
-5. IMPORTANT: self.sensor_obs['depth'] is numpy array - convert ONCE at the start:
-   depth_tensor = torch.from_numpy(self.sensor_obs['depth']).to(self.device)
-6. Do NOT convert other self.* attributes - they are already torch tensors
-7. Be confident - all listed variables exist, use them directly
+4. Return shape [N] tensor matching agent count
 
 BPTT Gradient Tips (CRITICAL):
 - ALWAYS use (self.velocity - 0) to avoid in-place gradient issues
 - ALWAYS use (self.angular_velocity - 0) for gradient safety
-- Example: velocity_penalty = -torch.norm(self.velocity - 0, dim=1)
 - This creates new tensors that preserve gradient flow
 
-Common Patterns:
-- Distance: -torch.norm(self.position - self.target, dim=1)
-- Velocity penalty: -torch.norm(self.velocity - 0, dim=1) * 0.01
-- Collision: -1.0 / (self.collision_dis + 0.2)
-- Stability: -torch.norm(self.angular_velocity - 0, dim=1) * 0.001
-- Step penalty: -0.01 * torch.ones(self.num_agent, device=self.device)
-- Depth sensor usage:
-  depth_tensor = torch.from_numpy(self.sensor_obs['depth']).to(self.device)
-  min_depth, _ = torch.min(depth_tensor.view(depth_tensor.size(0), -1), dim=1)
-  obstacle_penalty = -1.0 / (min_depth + 0.1)
+Design principles:
+- All variables are torch tensors (except _step_count, num_agent)
+- Use torch operations to compute your reward logic
+- Apply coefficients and combine components as you see fit  
+- AVOID boolean indexing assignments like tensor[mask] = value (can cause shape mismatches)
+- Use torch.where() instead of conditional assignments for safety
+- CRITICAL: Do NOT mix self._step_count (scalar) directly with tensors in final reward sum
+- If using step count, convert: torch.full((self.position.size(0),), -0.01) * self._step_count
+- Do NOT use torch.tensor(scalar, device=...) in torch.where - use scalar values directly
+- Example: torch.where(condition, 1.0, 0.0), NOT torch.where(condition, torch.tensor(1.0), torch.tensor(0.0))
 
 Numerical Safety:
 - Use torch.clamp(x, min=1e-8) only for division denominators
@@ -106,12 +99,8 @@ def extract_env_code_without_reward(env_class) -> str:
     from pathlib import Path
     
     # Get the source file of the environment class
-    try:
-        source_file = inspect.getfile(env_class)
-        return load_environment_code(source_file)
-    except Exception as e:
-        # Fallback if we can't get the source
-        return f"# Environment: {env_class.__name__}\n# Could not extract source: {e}"
+    source_file = inspect.getfile(env_class)
+    return load_environment_code(source_file)
 
 
 def create_user_prompt(

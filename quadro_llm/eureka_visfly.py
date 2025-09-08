@@ -5,13 +5,12 @@ This module provides the core EurekaVisFly class that orchestrates LLM-powered
 reward function optimization directly with VisFly environments.
 """
 
-import torch
 import logging
 from typing import Type, Dict, Any, List, Optional
 import time
 
 from .llm.llm_engine import LLMEngine
-from .utils.training_utils import TrainingResult
+from .core.models import TrainingResult
 from .core.models import OptimizationConfig
 from .core.model_evaluation import extract_environment_context_minimal
 from .core.subprocess_evaluator import SubprocessRewardEvaluator
@@ -39,11 +38,11 @@ class EurekaVisFly:
         env_class: Type,
         task_description: str,
         llm_config: Dict[str, Any],
-        env_kwargs: Optional[Dict[str, Any]] = None,
-        optimization_config: Optional[OptimizationConfig] = None,
-        device: str = "cuda",
-        max_workers: int = 4,
-        eval_env_config: Optional[Dict[str, Any]] = None,
+        env_kwargs: Dict[str, Any],
+        optimization_config: OptimizationConfig,
+        device: str,
+        max_workers: int,
+        eval_env_config: Dict[str, Any],
     ):
         """
         Initialize Eureka-VisFly controller.
@@ -59,8 +58,8 @@ class EurekaVisFly:
         self.env_class = env_class
         self.task_description = task_description
         self.device = device
-        self.env_kwargs = env_kwargs or {}
-        self.config = optimization_config or OptimizationConfig()
+        self.env_kwargs = env_kwargs
+        self.config = optimization_config
         self.max_workers = max_workers
         self.eval_env_config = eval_env_config
 
@@ -81,24 +80,20 @@ class EurekaVisFly:
     def create_environment(self, requires_grad: bool = False) -> Any:
         """Create a VisFly environment instance with specified configuration."""
         env_kwargs = self.env_kwargs.copy()
-        env_kwargs.update({"device": self.device, "requires_grad": requires_grad})
+        # Only update requires_grad - preserve environment's original device config
+        env_kwargs.update({"requires_grad": requires_grad})
+        # Don't override device - let environment use its configured device
         return self.env_class(**env_kwargs)
 
-    def optimize_rewards(
-        self, iterations: Optional[int] = None, samples: Optional[int] = None
-    ) -> List[TrainingResult]:
+    def optimize_rewards(self) -> List[TrainingResult]:
         """
-        Run the complete reward optimization pipeline.
-
-        Args:
-            iterations: Number of optimization iterations (overrides config)
-            samples: Number of reward function samples per iteration (overrides config)
+        Run the complete reward optimization pipeline using configured parameters.
 
         Returns:
             List of TrainingResult objects sorted by performance (best first)
         """
-        iterations = iterations or self.config.iterations
-        samples = samples or self.config.samples
+        iterations = self.config.iterations
+        samples = self.config.samples
 
         # Starting optimization - details already logged by pipeline
 
@@ -130,10 +125,8 @@ class EurekaVisFly:
                 self._save_reward_functions(reward_functions, iteration)
 
                 # Use parallel evaluation with GPU task distribution
-                identifiers = [
-                    f"iter{iteration}_sample{idx}"
-                    for idx in range(len(reward_functions))
-                ]
+                # Use simpler per-sample identifiers (sample{idx}); iteration handled separately in evaluator path logic
+                identifiers = [f"sample{idx}" for idx in range(len(reward_functions))]
 
                 # Use max_workers from initialization
                 max_concurrent = self.max_workers
@@ -158,6 +151,7 @@ class EurekaVisFly:
                     optimization_config={
                         "algorithm": self.config.algorithm,
                         "evaluation_episodes": self.config.evaluation_episodes,
+                        "iteration": iteration,
                     },
                     env_class_path=f"{self.env_class.__module__}.{self.env_class.__name__}",
                     max_concurrent=max_concurrent,
@@ -180,8 +174,9 @@ class EurekaVisFly:
                             identifier=result.identifier,
                         )
                         # Store log directory for tensorboard access
-                        if hasattr(result, "log_dir"):
-                            training_result.log_dir = result.log_dir
+                        if getattr(result, "log_dir", None):
+                            # TrainingResult.log_dir accepts Optional[str]
+                            training_result.log_dir = result.log_dir  # type: ignore[attr-defined]
                         training_results.append(training_result)
                         all_results.append(training_result)
 
@@ -190,20 +185,20 @@ class EurekaVisFly:
 
                 # Update best reward functions
                 if training_results:
-                    best_in_iteration = max(training_results, key=lambda x: x.score())
+                    best_in_iteration = max(training_results, key=lambda x: x.success_rate)
                     self.best_reward_functions.append(best_in_iteration.reward_code)
-                    self.logger.info(f"Best score: {best_in_iteration.score():.3f}")
+                    self.logger.info(f"Best success rate: {best_in_iteration.success_rate:.3f}")
 
             except Exception as e:
                 self.logger.error(f"Error in iteration {iteration + 1}: {e}")
                 continue
 
         # Sort all results by performance
-        all_results.sort(key=lambda x: x.score(), reverse=True)
+        all_results.sort(key=lambda x: x.success_rate, reverse=True)
 
         if all_results:
             self.logger.info(
-                f"Optimization complete. Best reward score: {all_results[0].score():.3f}"
+                f"Optimization complete. Best success rate: {all_results[0].success_rate:.3f}"
             )
         else:
             self.logger.warning(
@@ -241,10 +236,10 @@ class EurekaVisFly:
         if not prev_results:
             return "Previous iteration had no successful results. Try simpler reward designs."
 
-        best_prev = max(prev_results, key=lambda x: x.score())
+        best_prev = max(prev_results, key=lambda x: x.success_rate)
 
         feedback_parts = [
-            f"Previous best score: {best_prev.score():.3f}",
+            f"Previous best success rate: {best_prev.success_rate:.3f}",
             f"Success rate: {best_prev.success_rate:.3f}",
             f"Average episode length: {best_prev.episode_length:.1f}",
         ]
@@ -281,7 +276,7 @@ class EurekaVisFly:
             return "Previous iteration had no successful results. Try simpler reward designs."
 
         # Sort by score and get best result
-        best_result = max(last_results, key=lambda x: x.score())
+        best_result = max(last_results, key=lambda x: x.success_rate)
 
         feedback_parts = []
 
@@ -301,7 +296,7 @@ class EurekaVisFly:
 
         # If no tensorboard data, fall back to basic metrics
         if not feedback_parts:
-            feedback_parts.append(f"Previous best score: {best_result.score():.3f}")
+            feedback_parts.append(f"Previous best success rate: {best_result.success_rate:.3f}")
             feedback_parts.append(f"Success rate: {best_result.success_rate:.3f}")
             feedback_parts.append(
                 f"Average episode length: {best_result.episode_length:.1f}"
@@ -351,8 +346,8 @@ class EurekaVisFly:
             if HydraConfig.initialized():
                 hydra_cfg = HydraConfig.get()
                 base_dir = Path(hydra_cfg.runtime.output_dir) / "generated_rewards"
-        except:
-            pass  # Fall back to current directory
+        except Exception as e:
+            self.logger.debug(f"Hydra not available or not initialized: {e}")  # Fall back to current directory
 
         # Create iteration directory
         iter_dir = base_dir / f"iteration_{iteration}"
@@ -390,7 +385,8 @@ class EurekaVisFly:
                 env_config=self.env_kwargs,
                 optimization_config={
                     "algorithm": self.config.algorithm,
-                    "training_steps": self.config.training_steps,
+                    # choose a conservative per-sample training steps; worker also supports defaults
+                    "training_steps": 10000,
                     "evaluation_episodes": self.config.evaluation_episodes,
                 },
                 env_class_path=f"{self.env_class.__module__}.{self.env_class.__name__}",

@@ -9,10 +9,13 @@ the Eureka pipeline.
 
 import sys
 import os
+import json
+import logging
 import torch as th
 import traceback
 import argparse
 from pathlib import Path
+from typing import Any, cast
 
 # Set matplotlib backend for headless servers
 import matplotlib
@@ -27,12 +30,20 @@ sys.path.append(str(Path(__file__).parent / "VisFly"))
 import importlib.util
 from pathlib import Path
 
+# Module logger
+logger = logging.getLogger(__name__)
+
 
 def load_env_class(env_name, class_name):
     """Dynamically load environment class from specific file"""
     env_file = Path(__file__).parent / "envs" / f"{env_name}.py"
-    spec = importlib.util.spec_from_file_location(class_name, env_file)
+    if not env_file.exists():
+        raise FileNotFoundError(f"Env file not found: {env_file}")
+    spec = importlib.util.spec_from_file_location(class_name, str(env_file))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load spec for {class_name} from {env_file}")
     module = importlib.util.module_from_spec(spec)
+    # spec.loader is not None here
     spec.loader.exec_module(module)
     return getattr(module, class_name)
 
@@ -190,17 +201,19 @@ def inject_reward_function(reward_function_path: str, env_class):
             # Replace the get_reward method in the class
             if "get_reward" in exec_globals:
                 env_class.get_reward = exec_globals["get_reward"]
-                print(
-                    f"✅ Successfully injected reward function from {reward_function_path}"
+                logger.info(
+                    "Successfully injected reward function from %s",
+                    reward_function_path,
                 )
                 return True
             else:
-                print(f"❌ No get_reward function found in {reward_function_path}")
+                logger.warning(
+                    "No get_reward function found in %s", reward_function_path
+                )
                 return False
 
         except Exception as e:
-            print(f"❌ Failed to inject reward function: {e}")
-            traceback.print_exc()
+            logger.exception("Failed to inject reward function: %s", e)
             return False
 
     return False
@@ -209,18 +222,7 @@ def inject_reward_function(reward_function_path: str, env_class):
 def create_environment(env_name: str, env_config: dict, is_training: bool = True):
     """Create environment instance"""
 
-    # Environment mapping
-    env_classes = {
-        "navigation": NavigationEnv,
-        "hover": HoverEnv,
-        "object_tracking": ObjectTrackingEnv,
-        "tracking": TrackingEnv,
-        "catch": CatchEnv,
-        "landing": LandingEnv,
-        "racing": RacingEnv,
-        "flip": FlipEnv,
-        "vis_landing": VisLandingEnv,
-    }
+    env_classes = get_env_class_registry()
 
     if env_name not in env_classes:
         raise ValueError(f"Unknown environment: {env_name}")
@@ -271,64 +273,94 @@ def create_algorithm(algorithm: str, alg_config: dict, env, save_folder: str):
         raise ValueError(f"Unsupported algorithm: {algorithm}")
 
 
+def get_env_class_registry():
+    """Get mapping of environment names to classes"""
+    return {
+        "navigation": NavigationEnv,
+        "hover": HoverEnv,
+        "object_tracking": ObjectTrackingEnv,
+        "tracking": TrackingEnv,
+        "catch": CatchEnv,
+        "landing": LandingEnv,
+        "racing": RacingEnv,
+        "flip": FlipEnv,
+        "vis_landing": VisLandingEnv,
+    }
+
+
+def setup_save_directory(env_name: str) -> str:
+    """Create and return save directory path"""
+    save_folder = Path(__file__).parent / "results" / "training" / env_name
+    save_folder.mkdir(parents=True, exist_ok=True)
+    return str(save_folder) + "/"
+
+
+def apply_custom_reward(reward_function_path: str, env_name: str, train_env):
+    """Apply custom reward function if provided"""
+    if reward_function_path:
+        env_classes = get_env_class_registry()
+        if env_name not in env_classes:
+            raise ValueError(f"Unknown environment for reward injection: {env_name}")
+        
+        inject_reward_function(reward_function_path, env_classes[env_name])
+        # Reset environment to apply new reward function
+        train_env.reset()
+
+
+def load_model_weights(model, weight_path: str, save_folder: str, train_env):
+    """Load existing model weights if specified"""
+    if weight_path:
+        full_weight_path = save_folder + weight_path
+        model.load(path=full_weight_path, env=train_env)
+
+
+def execute_training(model, algorithm: str, learning_params: dict):
+    """Execute the training process based on algorithm"""
+    m_any = cast(Any, model)
+    if algorithm in ["bptt", "shac"]:
+        m_any.learn(**learning_params)
+    elif algorithm == "ppo":
+        m_any.learn(total_timesteps=int(learning_params["total_timesteps"]))
+    else:
+        raise ValueError(f"Unknown training algorithm: {algorithm}")
+
+
 def run_training(args):
     """Execute training workflow"""
-
     try:
-        # Load configurations
+        logger.info(
+            "Starting training: env=%s algorithm=%s comment=%s",
+            args.env,
+            args.algorithm,
+            args.comment,
+        )
+        
+        # Load and prepare configurations
         env_config, alg_config = load_configs(args.env, args.algorithm)
         env_config, alg_config = apply_config_overrides(env_config, alg_config, args)
 
-        # Setup save directory
-        save_folder = Path(__file__).parent / "results" / "training" / args.env
-        save_folder.mkdir(parents=True, exist_ok=True)
-        save_folder = str(save_folder) + "/"
-
-        # Create training environment
+        # Setup directories and environment
+        save_folder = setup_save_directory(args.env)
         train_env = create_environment(args.env, env_config, is_training=True)
 
-        # Inject custom reward function if provided (Eureka integration)
-        env_classes = {
-            "navigation": NavigationEnv,
-            "hover": HoverEnv,
-            "object_tracking": ObjectTrackingEnv,
-            "tracking": TrackingEnv,
-            "catch": CatchEnv,
-            "landing": LandingEnv,
-            "racing": RacingEnv,
-            "flip": FlipEnv,
-            "vis_landing": VisLandingEnv,
-        }
+        # Apply custom reward function if provided
+        apply_custom_reward(args.reward_function_path, args.env, train_env)
 
-        if args.reward_function_path:
-            inject_reward_function(args.reward_function_path, env_classes[args.env])
-            # Reset environment to apply new reward function
-            train_env.reset()
-
-        # Create algorithm
+        # Create and configure algorithm
         model = create_algorithm(args.algorithm, alg_config, train_env, save_folder)
+        load_model_weights(model, args.weight, save_folder, train_env)
 
-        # Load existing weights if specified
-        if args.weight is not None:
-            weight_path = save_folder + args.weight
-            model.load(path=weight_path, env=train_env)
-
-        # Training
+        # Execute training
         learning_params = alg_config["learn"]
+        execute_training(model, args.algorithm, learning_params)
 
-        # Call learn method based on algorithm
-        if args.algorithm in ["bptt", "shac"]:
-            model.learn(**learning_params)
-        elif args.algorithm == "ppo":
-            model.learn(total_timesteps=int(learning_params["total_timesteps"]))
-
+        # Save results
         model.save()
-
+        logger.info("Training completed and model saved.")
         return True
 
     except Exception as e:
-        print(f"Training failed: {e}")
-        traceback.print_exc()
+        logger.exception("Training failed: %s", e)
         return False
 
 
@@ -336,6 +368,12 @@ def run_testing(args):
     """Execute testing workflow"""
 
     try:
+        logger.info(
+            "Starting testing: env=%s algorithm=%s weight=%s",
+            args.env,
+            args.algorithm,
+            args.weight,
+        )
         # Load configurations
         env_config, alg_config = load_configs(args.env, args.algorithm)
         env_config, alg_config = apply_config_overrides(env_config, alg_config, args)
@@ -379,9 +417,12 @@ def run_testing(args):
                 if success.any():
                     break
 
-        avg_reward = total_reward / steps
-        print(
-            f"Test Results: {steps} steps, avg reward: {avg_reward:.4f}, total: {total_reward:.4f}"
+        avg_reward = total_reward / steps if steps > 0 else 0.0
+        logger.info(
+            "Test Results: %d steps, avg reward: %.4f, total: %.4f",
+            steps,
+            avg_reward,
+            total_reward,
         )
 
         # Save test results
@@ -399,11 +440,11 @@ def run_testing(args):
         ) as f:
             json.dump(test_results, f, indent=2)
 
+        logger.info("Testing completed and results saved.")
         return True
 
     except Exception as e:
-        print(f"Testing failed: {e}")
-        traceback.print_exc()
+        logger.exception("Testing failed: %s", e)
         return False
 
 
@@ -415,6 +456,12 @@ def main():
     th.manual_seed(args.seed)
 
     try:
+        # Configure logging once at entry if not already configured
+        if not logging.getLogger().hasHandlers():
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+            )
         if args.train:
             success = run_training(args)
         else:
@@ -423,8 +470,7 @@ def main():
         return 0 if success else 1
 
     except Exception as e:
-        print(f"System failed: {e}")
-        traceback.print_exc()
+        logger.exception("System failed: %s", e)
         return 1
 
 

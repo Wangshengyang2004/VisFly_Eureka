@@ -4,7 +4,7 @@ env:
   max_episode_steps: 256
   sensor_kwargs: []
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_corner_pillars"
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_empty"
   dynamics_kwargs:
     dt: 0.03
     ctrl_dt: 0.03
@@ -31,7 +31,7 @@ eval_env:
   visual: true
   tensor_output: false
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_corner_pillars"
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_empty"
     render_settings:
       mode: fix
       view: custom

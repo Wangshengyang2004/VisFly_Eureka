@@ -10,8 +10,9 @@ from .core.models import (
     IterationSummary,
     OptimizationReport,
     OptimizationConfig,
+    TrainingResult,
 )
-from .pipeline import EurekaNavigationPipeline
+from .pipeline import EurekaPipeline
 from .eureka_visfly import EurekaVisFly
 
 __version__ = "1.0.0"
@@ -21,6 +22,7 @@ __all__ = [
     "IterationSummary",
     "OptimizationReport",
     "OptimizationConfig",
-    "EurekaNavigationPipeline",
+    "TrainingResult",
+    "EurekaPipeline",
     "EurekaVisFly",
 ]

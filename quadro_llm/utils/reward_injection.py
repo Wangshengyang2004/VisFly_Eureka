@@ -9,7 +9,7 @@ import torch
 import types
 import logging
 import ast
-import inspect
+import time
 from typing import Any, Dict, Optional, Callable
 
 
@@ -205,8 +205,9 @@ def _test_injected_reward(
                     logger.error("Reward function returned NaN or infinite values")
                     continue
 
-                # Additional sanity checks
-                if reward.numel() > 1000:  # Suspiciously large reward tensor
+                # Additional sanity checks  
+                from ..constants import MAX_REASONABLE_REWARD_TENSOR_SIZE
+                if reward.numel() > MAX_REASONABLE_REWARD_TENSOR_SIZE:  # Suspiciously large reward tensor
                     logger.warning(f"Large reward tensor: {reward.shape}")
 
                 # Check if reward values are reasonable (not extremely large)
@@ -423,7 +424,7 @@ class RewardInjector:
         # Record injection attempt
         RewardInjector.injection_history.append(
             {
-                "timestamp": torch.tensor(0.0).cpu(),  # Placeholder for timestamp
+                "timestamp": time.time(),
                 "env_class": env_instance.__class__.__name__,
                 "success": success,
                 "reward_code_hash": hash(reward_code),

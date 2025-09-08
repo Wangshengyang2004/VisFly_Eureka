@@ -3,7 +3,7 @@
 
 defaults:
   - envs: navigation
-  - llm: gpt-4o
+  - llm: glm-4.5
   - task: navigation_task
   - api_keys
   - _self_

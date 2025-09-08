@@ -7,14 +7,25 @@ allocation for running multiple training processes in parallel.
 
 import torch
 import subprocess
-import json
 import time
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from threading import Thread, Event, Lock
-import psutil
-import os
+
+from ..constants import (
+    GPU_MEMORY_CONVERSION_FACTOR,
+    MEMORY_CACHE_TTL_SECONDS,
+    GPU_MEMORY_SAFETY_MARGIN,
+    MEMORY_GROWTH_ESTIMATION_PERIOD,
+    MEMORY_GROWTH_CALCULATION_DIVISOR,
+    MEMORY_GROWTH_FACTOR_MAX,
+    MEMORY_ESTIMATION_THRESHOLD_STEPS,
+    MEMORY_ESTIMATION_BUFFER_FACTOR,
+    OOM_RETRY_MEMORY_INCREASE_FACTOR,
+    bytes_to_mb,
+    get_gpu_memory_with_safety_margin,
+)
 
 
 @dataclass
@@ -35,22 +46,13 @@ class GPUInfo:
 class GPUMonitor:
     """Monitor GPU usage and manage resource allocation"""
 
-    def __init__(self, update_interval: float = None):
+    def __init__(self, update_interval: float):
         """
         Initialize GPU monitor.
 
         Args:
             update_interval: How often to update GPU stats (seconds)
         """
-        if update_interval is None:
-            # Import here to avoid circular imports
-            try:
-                from config import GPU_CONFIG
-
-                update_interval = GPU_CONFIG["gpu_monitor_update_interval"]
-            except ImportError:
-                update_interval = 5.0  # fallback default
-
         self.update_interval = update_interval
         self.logger = logging.getLogger(__name__)
         self.monitoring = False
@@ -87,7 +89,7 @@ class GPUMonitor:
                 capture_output=True,
                 text=True,
                 check=True,
-                timeout=30,
+                timeout=30,  # GPU query timeout
             )
 
             gpu_infos = []
@@ -149,8 +151,8 @@ class GPUMonitor:
         """
         current_time = time.time()
 
-        # Use cache if recent (within 2 seconds)
-        if current_time - self._torch_cache_time < 2.0:
+        # Use cache if recent
+        if current_time - self._torch_cache_time < MEMORY_CACHE_TTL_SECONDS:
             return self._torch_memory_cache
 
         memory_info = {}
@@ -159,11 +161,9 @@ class GPUMonitor:
             for gpu_id in range(self.num_gpus):
                 with torch.cuda.device(gpu_id):
                     # Get memory info in bytes, convert to MB
-                    total_memory = torch.cuda.get_device_properties(
-                        gpu_id
-                    ).total_memory // (1024 * 1024)
-                    allocated_memory = torch.cuda.memory_allocated() // (1024 * 1024)
-                    cached_memory = torch.cuda.memory_reserved() // (1024 * 1024)
+                    total_memory = bytes_to_mb(torch.cuda.get_device_properties(gpu_id).total_memory)
+                    allocated_memory = bytes_to_mb(torch.cuda.memory_allocated())
+                    cached_memory = bytes_to_mb(torch.cuda.memory_reserved())
 
                     # Estimated free memory (approximation)
                     used_memory = max(allocated_memory, cached_memory)
@@ -251,7 +251,7 @@ class GPUMonitor:
                 self.logger.error(f"Error in monitoring loop: {e}")
 
     def get_available_gpus(
-        self, min_memory_mb: int = None, max_utilization: int = None
+        self, min_memory_mb: int, max_utilization: int
     ) -> List[int]:
         """
         Get list of GPU IDs that are available for new training jobs.
@@ -263,17 +263,6 @@ class GPUMonitor:
         Returns:
             List of available GPU device IDs
         """
-        if min_memory_mb is None or max_utilization is None:
-            try:
-                from config import GPU_CONFIG
-
-                min_memory_mb = min_memory_mb or GPU_CONFIG["min_memory_mb"]
-                max_utilization = (
-                    max_utilization or GPU_CONFIG["max_utilization_percent"]
-                )
-            except ImportError:
-                min_memory_mb = min_memory_mb or 4000
-                max_utilization = max_utilization or 30
 
         # Use cached stats if monitoring is active and recent
         current_time = time.time()
@@ -284,7 +273,7 @@ class GPUMonitor:
             self._last_update = current_time
         elif (
             not hasattr(self, "_last_update")
-            or (current_time - self._last_update) > self.update_interval * 2
+            or (self.update_interval is not None and (current_time - self._last_update) > self.update_interval * 2)
         ):
             # Force refresh if data is too old
             gpu_infos = self.get_gpu_info()
@@ -299,7 +288,7 @@ class GPUMonitor:
             ):
                 available.append(gpu_id)
 
-        # Only log if there's a change in available GPUs or every 5 calls
+        # Only log if there's a change in available GPUs
         if not hasattr(self, "_last_available") or self._last_available != available:
             self.logger.info(
                 f"Available GPUs: {available} (mem>={min_memory_mb}MB, util<={max_utilization}%)"
@@ -309,7 +298,7 @@ class GPUMonitor:
         return available
 
     def estimate_max_parallel_jobs(
-        self, memory_per_job_mb: int = 8000
+        self, memory_per_job_mb: int = 8000  # Default 8GB per job
     ) -> Dict[int, int]:
         """
         Estimate maximum parallel jobs per GPU based on memory requirements.
@@ -328,7 +317,7 @@ class GPUMonitor:
 
         for gpu_id, gpu_info in self.gpu_stats.items():
             # Reserve some memory for system overhead
-            usable_memory = max(0, gpu_info.memory_free - 1000)  # Reserve 1GB
+            usable_memory = get_gpu_memory_with_safety_margin(gpu_info.memory_free)
             max_jobs = max(0, usable_memory // memory_per_job_mb)
             estimates[gpu_id] = max_jobs
 
@@ -383,13 +372,16 @@ class DynamicGPUResourceManager:
 
         # Memory monitoring settings
         self.memory_check_interval = 10.0  # seconds
-        self.memory_safety_margin = 1000  # MB reserve for safety
-        self.max_memory_growth_factor = 1.5  # Allow 50% growth from initial estimate
+        self.memory_safety_margin = GPU_MEMORY_SAFETY_MARGIN
+        self.max_memory_growth_factor = MEMORY_GROWTH_FACTOR_MAX
+        
+        # Load balancing
+        self.round_robin_counter = 0  # For better GPU distribution
 
     def allocate_gpu_with_queue(
         self,
         job_id: str,
-        memory_requirement_mb: int = 8000,
+        memory_requirement_mb: int = 8000,  # Default 8GB per job
         allow_cpu_fallback: bool = True,
     ) -> Optional[str]:
         """
@@ -433,9 +425,9 @@ class DynamicGPUResourceManager:
         if not memory_info:
             return None
 
-        best_gpu = None
-        max_available_memory = 0
-
+        # Find all GPUs that can fit the job
+        suitable_gpus = []
+        
         for gpu_id, mem_info in memory_info.items():
             # Calculate projected memory usage for this GPU
             projected_usage = self._calculate_projected_memory_usage(gpu_id, mem_info)
@@ -444,12 +436,33 @@ class DynamicGPUResourceManager:
             )
 
             # Check if this GPU can fit the new job
-            if (
-                available_memory >= memory_requirement_mb
-                and available_memory > max_available_memory
-            ):
-                max_available_memory = available_memory
-                best_gpu = gpu_id
+            if available_memory >= memory_requirement_mb:
+                current_jobs = len(self.gpu_assignments.get(gpu_id, []))
+                suitable_gpus.append({
+                    'gpu_id': gpu_id,
+                    'available_memory': available_memory,
+                    'current_jobs': current_jobs
+                })
+
+        if not suitable_gpus:
+            return None
+            
+        # Sort by current job count (load balancing), then by available memory
+        suitable_gpus.sort(key=lambda x: (x['current_jobs'], -x['available_memory']))
+        
+        # Use round-robin among GPUs with same job count for better distribution
+        min_jobs = suitable_gpus[0]['current_jobs']
+        least_loaded_gpus = [gpu for gpu in suitable_gpus if gpu['current_jobs'] == min_jobs]
+        
+        if len(least_loaded_gpus) > 1:
+            # Round-robin among least loaded GPUs
+            selected_idx = self.round_robin_counter % len(least_loaded_gpus)
+            self.round_robin_counter += 1
+            best_gpu = least_loaded_gpus[selected_idx]['gpu_id']
+            max_available_memory = least_loaded_gpus[selected_idx]['available_memory']
+        else:
+            best_gpu = suitable_gpus[0]['gpu_id']
+            max_available_memory = suitable_gpus[0]['available_memory']
 
         if best_gpu is not None:
             # Allocate the GPU
@@ -493,9 +506,10 @@ class DynamicGPUResourceManager:
 
                 # Estimate how much more memory this job might use
                 time_running = time.time() - profile.start_time
-                if time_running < 300:  # First 5 minutes - expect growth
+                if time_running < MEMORY_GROWTH_ESTIMATION_PERIOD:  # First 5 minutes - expect growth
                     growth_factor = min(
-                        self.max_memory_growth_factor, 1.0 + (300 - time_running) / 600
+                        self.max_memory_growth_factor, 
+                        1.0 + (MEMORY_GROWTH_ESTIMATION_PERIOD - time_running) / MEMORY_GROWTH_CALCULATION_DIVISOR
                     )
                     estimated_peak = profile.current_memory_mb * growth_factor
                     projected_growth += max(
@@ -523,11 +537,11 @@ class DynamicGPUResourceManager:
                 profile.training_step = training_step
                 profile.last_update = time.time()
 
-                # After 1000 steps, estimate final memory usage
-                if training_step >= 1000 and profile.estimated_final_memory_mb is None:
+                # After threshold steps, estimate final memory usage
+                if training_step >= MEMORY_ESTIMATION_THRESHOLD_STEPS and profile.estimated_final_memory_mb is None:
                     profile.estimated_final_memory_mb = int(
-                        profile.peak_memory_mb * 1.1
-                    )  # Add 10% buffer
+                        profile.peak_memory_mb * MEMORY_ESTIMATION_BUFFER_FACTOR
+                    )
                     self.logger.info(
                         f"Job {job_id} estimated final memory: {profile.estimated_final_memory_mb}MB "
                         f"(current: {current_memory}MB, peak: {profile.peak_memory_mb}MB)"
@@ -552,8 +566,8 @@ class DynamicGPUResourceManager:
                         f"GPU {gpu_id} overloaded with {current_jobs} jobs, queueing {job_id} for retry"
                     )
                     self.job_queue.append(
-                        (job_id, profile.peak_memory_mb * 1.2)
-                    )  # Request 20% more memory
+                        (job_id, int(profile.peak_memory_mb * OOM_RETRY_MEMORY_INCREASE_FACTOR))
+                    )  # Request more memory for retry
                     return True
                 else:
                     # Only job on GPU but still OOM - probably job is too large for this GPU
@@ -626,22 +640,29 @@ class DynamicGPUResourceManager:
 
 def main():
     """Test GPU monitoring functionality"""
-    logging.basicConfig(level=logging.INFO)
+    if not logging.getLogger().hasHandlers():
+        logging.basicConfig(level=logging.INFO)
 
-    monitor = GPUMonitor()
+    monitor = GPUMonitor(update_interval=5.0)
     monitor.start_monitoring()
 
     try:
         monitor.log_gpu_status()
 
-        available = monitor.get_available_gpus()
-        print(f"Available GPUs: {available}")
+        available = monitor.get_available_gpus(
+            min_memory_mb=4000,  # 4GB minimum
+            max_utilization=30   # 30% max utilization
+        )
+        logging.info("Available GPUs: %s", available)
 
         estimates = monitor.estimate_max_parallel_jobs()
-        print(f"Max parallel jobs: {estimates}")
+        logging.info("Max parallel jobs: %s", estimates)
 
         # Test for 10 seconds
         time.sleep(10)
+
+    except Exception as e:
+        logging.exception("GPU monitor demo failed: %s", e)
 
     finally:
         monitor.stop_monitoring()

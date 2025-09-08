@@ -30,7 +30,7 @@ PROJECT_ROOT = Path(__file__).parent.absolute()
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "VisFly"))
 
-from quadro_llm import EurekaNavigationPipeline, OptimizationReport
+from quadro_llm import EurekaPipeline, EurekaVisFly, OptimizationConfig, OptimizationReport
 
 
 def setup_logging(cfg: DictConfig):
@@ -47,6 +47,128 @@ def setup_logging(cfg: DictConfig):
     logger = logging.getLogger(__name__)
     logger.info("Logging setup complete")
     return logger
+
+
+def load_environment_class(env_name: str):
+    """Load environment class by name"""
+    env_registry = {
+        "navigation": ("VisFly.envs.NavigationEnv", "NavigationEnv"),
+        "hover": ("VisFly.envs.HoverEnv", "HoverEnv"),
+        "racing": ("VisFly.envs.RacingEnv", "RacingEnv"),
+        "tracking": ("VisFly.envs.ObjectTrackingEnv", "ObjectTrackingEnv"),
+    }
+    
+    if env_name not in env_registry:
+        raise ValueError(f"Unknown environment: {env_name}")
+    
+    module_name, class_name = env_registry[env_name]
+    import importlib
+    module = importlib.import_module(module_name)
+    return getattr(module, class_name)
+
+
+def prepare_env_config(env_config: DictConfig) -> dict:
+    """Convert environment config to dict and handle tensor conversions"""
+    from omegaconf import OmegaConf
+    import torch
+    
+    env_kwargs = OmegaConf.to_container(env_config, resolve=True)
+    
+    # Convert target to tensor if present
+    if "target" in env_kwargs:
+        env_kwargs["target"] = torch.tensor([env_kwargs["target"]])
+    
+    return env_kwargs
+
+
+def load_llm_config(cfg: DictConfig) -> dict:
+    """Load and prepare LLM configuration with API keys
+    
+    Note: All LLM parameters come from config files (configs/llm/*.yaml)
+    No default values - config is always correct and complete.
+    """
+    import yaml
+    
+    api_keys_path = PROJECT_ROOT / "configs" / "api_keys.yaml"
+    
+    with open(api_keys_path, "r") as f:
+        api_config = yaml.safe_load(f)
+        vendor = cfg.llm.llm.vendor
+        vendor_config = api_config["providers"][vendor]
+
+    # All values come from config - no defaults needed
+    llm_config = {
+        "model": cfg.llm.llm.model,
+        "api_key": vendor_config["api_key"], 
+        "base_url": vendor_config["base_url"],
+        "temperature": cfg.llm.llm.temperature,
+        "max_tokens": cfg.llm.llm.max_tokens,
+        "timeout": cfg.llm.llm.timeout,
+        "max_retries": cfg.llm.llm.max_retries,
+    }
+    
+    # Add thinking configuration if present in config
+    if hasattr(cfg.llm.llm, 'thinking') and hasattr(cfg.llm.llm.thinking, 'enabled'):
+        llm_config["thinking_enabled"] = cfg.llm.llm.thinking.enabled
+    
+    # Add batching configuration if present in config
+    if hasattr(cfg.llm.llm, 'batching'):
+        batching = cfg.llm.llm.batching
+        if hasattr(batching, 'strategy'):
+            llm_config["batching_strategy"] = batching.strategy
+        if hasattr(batching, 'supports_n_parameter'):
+            llm_config["supports_n_parameter"] = batching.supports_n_parameter
+        if hasattr(batching, 'max_concurrent'):
+            llm_config["max_concurrent"] = batching.max_concurrent
+    
+    return llm_config
+
+
+def create_optimization_config(cfg: DictConfig) -> OptimizationConfig:
+    """Create optimization configuration from config"""
+    return OptimizationConfig(
+        iterations=cfg.optimization.iterations,
+        samples=cfg.optimization.samples,
+        algorithm=cfg.optimization.algorithm,
+        evaluation_episodes=cfg.optimization.evaluation_episodes,
+        timeout_per_iteration=cfg.execution.timeout_per_sample,
+    )
+
+
+def prepare_eval_env_config(cfg: DictConfig, base_env_config: dict) -> dict:
+    """Prepare evaluation environment configuration"""
+    if "eval_env" in cfg.envs:
+        eval_env_config = prepare_env_config(cfg.envs.eval_env)
+    else:
+        eval_env_config = base_env_config.copy()
+    
+    return eval_env_config
+
+
+def create_eureka_controller(cfg: DictConfig, logger: logging.Logger) -> EurekaVisFly:
+    """Create and configure EurekaVisFly controller from config"""
+    
+    # Load environment class
+    env_class = load_environment_class(cfg.optimization.environment)
+    
+    # Prepare configurations
+    env_kwargs = prepare_env_config(cfg.envs.env)
+    llm_config = load_llm_config(cfg)
+    opt_config = create_optimization_config(cfg)
+    eval_env_config = prepare_eval_env_config(cfg, env_kwargs)
+    
+    # Create Eureka controller  
+    env_device = env_kwargs["device"]
+    return EurekaVisFly(
+        env_class=env_class,
+        task_description=cfg.task.task.description,
+        llm_config=llm_config,
+        env_kwargs=env_kwargs,
+        optimization_config=opt_config,
+        device=env_device,
+        max_workers=cfg.execution.max_workers,
+        eval_env_config=eval_env_config,
+    )
 
 
 def print_configuration_summary(cfg: DictConfig, logger: logging.Logger):
@@ -84,10 +206,12 @@ def run_optimization(cfg: DictConfig, logger: logging.Logger) -> OptimizationRep
             f"Hydra not initialized, using current directory: {hydra_output_dir}"
         )
 
-    # Initialize pipeline with config directly
-    pipeline = EurekaNavigationPipeline(
-        task_description=cfg.task.task.description,
-        config=cfg,
+    # Create Eureka controller with complex initialization logic
+    eureka_controller = create_eureka_controller(cfg, logger)
+    
+    # Initialize simplified pipeline
+    pipeline = EurekaPipeline(
+        eureka_controller=eureka_controller,
         output_dir=hydra_output_dir,
     )
 
@@ -139,10 +263,12 @@ def print_results_summary(results: OptimizationReport, logger: logging.Logger):
     if results.iteration_history:
         logger.info("Iteration Progression:")
         for iter_data in results.iteration_history:
+            # iter_data is IterationSummary dataclass
             logger.info(
-                f"  Iter {iter_data['iteration']}: "
-                f"Success={iter_data['best_success_rate']:.3f}, "
-                f"Exec Rate={iter_data['execution_rate']:.1%}"
+                "  Iter %s: Success=%.3f, Exec Rate=%.1f%%",
+                getattr(iter_data, 'iteration', None),
+                getattr(iter_data, 'best_success_rate', 0.0),
+                getattr(iter_data, 'execution_rate', 0.0) * 100.0,
             )
 
 
@@ -171,16 +297,16 @@ def main(cfg: DictConfig) -> None:
         # Print results
         print_results_summary(results, logger)
 
-        # Success message
-        logger.info("🎉 VisFly-Eureka optimization completed successfully!")
-        logger.info(f"📊 Results saved to: {os.getcwd()}")
+        # Success message (no emoji)
+        logger.info("VisFly-Eureka optimization completed successfully.")
+        logger.info("Results saved to: %s", os.getcwd())
 
     except Exception as e:
-        logger.error(f"❌ Optimization failed: {e}")
+        logger.error("Optimization failed: %s", e)
         raise
 
     except KeyboardInterrupt:
-        logger.info("⚠️  Optimization interrupted by user")
+        logger.info("Optimization interrupted by user")
         raise
 
 

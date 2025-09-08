@@ -1,4 +1,5 @@
 import numpy as np
+import logging
 from habitat_sim.sensor import SensorType
 import os
 import sys
@@ -111,14 +112,7 @@ class NavigationEnv(DroneGymEnvsBase):
         scale = scale.clamp(min=0.0, max=1.0)
         # If vel <= min_vel, no aware reward, scale = 0; If vel >= max_vel, scale = 1; In between, linear
         r_perception_aware = align * scale * 0.02
-        
-        # Smooth action
-        # current_action = self._action.to(self.device)  # shape (num_agent, 4)
-        # # Use dynamics communication delay buffer if available; else fall back to current action (zero penalty)
-        # dyn = self.envs.dynamics
-        # prev_action = dyn._pre_action[0].T.to(self.device)  # shape (num_agent, 4)
-        # r_smooth_action = -0.005 * (current_action - prev_action + 1e-8).norm(dim=1)
-        
+
         # Collision avoidance
         collision_dist = self.collision_vector.norm(dim=1)
         # Distance to obstacle, trigger when distance < 0.8, exponential decay
@@ -142,14 +136,15 @@ class NavigationEnv(DroneGymEnvsBase):
 
 if __name__ == "__main__":
     import cv2 as cv
-    
     import matplotlib
+    # Configure basic logging for this debug run
+    if not logging.getLogger().hasHandlers():
+        logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     matplotlib.use('Agg')  # Use non-interactive backend for headless
 
     # Detect headless environment
     import os
-
     headless = os.environ.get('DISPLAY') is None or os.environ.get('SSH_CONNECTION') is not None
 
     random_kwargs = {
@@ -221,8 +216,6 @@ if __name__ == "__main__":
         target_pos = th.tensor([target])
 
         # Create a ring around target (circle points)
-        import numpy as np
-
         ring_points = []
         ring_radius = 1.0
         for angle in np.linspace(0, 2 * np.pi, 20):
@@ -248,8 +241,8 @@ if __name__ == "__main__":
                 
                 # Debug print to understand the data shape
                 if t == 0:
-                    print(f"Obs data shape: {obs_data.shape}, dtype: {obs_data.dtype}")
-                    print(f"Obs data min/max: {obs_data.min():.3f}/{obs_data.max():.3f}")
+                    logging.info("Obs data shape: %s, dtype: %s", obs_data.shape, obs_data.dtype)
+                    logging.info("Obs data min/max: %.3f/%.3f", float(obs_data.min()), float(obs_data.max()))
                 
                 try:
                     if len(obs_data.shape) == 3 and obs_data.shape[0] >= 3:  # Multi-channel (RGB/RGBA)
@@ -273,8 +266,8 @@ if __name__ == "__main__":
                     obs_writer.write(obs_frame)
                 except Exception as e:
                     if t == 0:
-                        print(f"Error processing obs frame: {e}")
-                        print(f"Obs data shape: {obs_data.shape}")
+                        logging.warning("Error processing obs frame: %s", e)
+                        logging.info("Obs data shape: %s", obs_data.shape)
                     # Write a black frame as fallback
                     black_frame = np.zeros((128, 128, 3), dtype=np.uint8)
                     obs_writer.write(black_frame)
@@ -291,6 +284,6 @@ if __name__ == "__main__":
     if headless and video_writer:
         video_writer.release()
         obs_writer.release()
-        print("Videos saved: debug_video.mp4, debug_obs.mp4")
+        logging.info("Videos saved: debug_video.mp4, debug_obs.mp4")
     if not headless:
         cv.destroyAllWindows()
