@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import yaml
+import torch
 
 
 def _setup_paths(project_root: Path) -> None:
@@ -186,6 +187,17 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         logger.info(f"[stage] starting training for {train_steps} steps ...")
         t0 = time.time()
         
+        # Track GPU memory if using CUDA
+        peak_memory_mb = 0
+        if torch.cuda.is_available() and alg_device.startswith("cuda"):
+            gpu_id = int(alg_device.split(":")[1]) if ":" in alg_device else 0
+            try:
+                initial_memory = torch.cuda.memory_allocated(gpu_id) // (1024**2)  # MB
+                torch.cuda.reset_peak_memory_stats(gpu_id)
+                logger.info(f"Initial GPU memory: {initial_memory}MB")
+            except Exception as e:
+                logger.warning(f"GPU memory tracking failed: {e}")
+        
         # Prepare training arguments
         train_args = {"total_timesteps": int(train_steps)}
         if log_interval is not None:
@@ -194,7 +206,31 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         # Use getattr to avoid static type check issues
         getattr(model, "learn")(**train_args)
         training_time = time.time() - t0
+        
+        # Get peak GPU memory usage
+        if torch.cuda.is_available() and alg_device.startswith("cuda"):
+            gpu_id = int(alg_device.split(":")[1]) if ":" in alg_device else 0
+            try:
+                peak_memory_mb = torch.cuda.max_memory_allocated(gpu_id) // (1024**2)  # MB
+                final_memory = torch.cuda.memory_allocated(gpu_id) // (1024**2)  # MB
+                logger.info(f"Peak GPU memory: {peak_memory_mb}MB, Final: {final_memory}MB")
+            except Exception as e:
+                logger.warning(f"GPU memory tracking failed: {e}")
+        
         logger.info(f"Training completed in {training_time:.2f}s")
+        
+        # Save trained model
+        model_saved = False
+        model_save_path = Path(output_dir) / "trained_model.zip"
+        try:
+            if hasattr(model, 'save'):
+                model.save(str(model_save_path))
+                model_saved = True
+                logger.info(f"Saved trained model to: {model_save_path}")
+            else:
+                logger.warning("Model does not support saving (no 'save' method)")
+        except Exception as e:
+            logger.warning(f"Failed to save model: {e}")
 
         # Create evaluation env (requires_grad False)
         eval_env_config = {**eval_env_config, "requires_grad": False}
@@ -276,6 +312,9 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
             "final_reward": avg_final_reward,
             "convergence_step": train_steps,
             "output_dir": str(output_dir),
+            "peak_memory_mb": peak_memory_mb,
+            "model_saved": model_saved,
+            "model_path": str(model_save_path) if model_saved else None,
         }
 
         with open(output_path, "w") as f:

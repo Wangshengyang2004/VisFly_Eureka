@@ -9,6 +9,8 @@ import logging
 import time
 import asyncio
 import concurrent.futures
+import json
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 
@@ -86,6 +88,9 @@ class LLMEngine:
 
         self.client = OpenAI(**client_kwargs)
         self.logger.info(f"Initialized LLM engine with model: {model}")
+        
+        # Initialize conversation logging
+        self.conversations: List[Dict[str, Any]] = []
 
     def generate_reward_functions(
         self,
@@ -127,17 +132,22 @@ class LLMEngine:
 
         # Use appropriate batching strategy based on configuration
         if self.batching_strategy == "n_parameter" and self.supports_n_parameter:
-            return self._generate_with_n_parameter(messages, samples)
+            results = self._generate_with_n_parameter(messages, samples)
         elif self.batching_strategy == "sequential":
-            return self._generate_sequential(messages, samples)
+            results = self._generate_sequential(messages, samples)
         elif self.batching_strategy == "async":
-            return self._generate_async(messages, samples)
+            results = self._generate_async(messages, samples)
         elif self.batching_strategy == "multiprocessing":
-            return self._generate_multiprocessing(messages, samples)
+            results = self._generate_multiprocessing(messages, samples)
         else:
             # Fallback to sequential if strategy is unknown
             self.logger.warning(f"Unknown batching strategy '{self.batching_strategy}', falling back to sequential")
-            return self._generate_sequential(messages, samples)
+            results = self._generate_sequential(messages, samples)
+        
+        # Log the conversation
+        self._log_conversation(messages, results, task_description, feedback, samples)
+        
+        return results
 
     def _generate_with_n_parameter(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate multiple samples using API's n parameter (OpenAI style)."""
@@ -474,6 +484,44 @@ class LLMEngine:
         return self.generate_single_reward_function(
             task_description, context_info, improvement_prompt
         )
+
+    def _log_conversation(
+        self,
+        messages: List[Dict[str, Any]],
+        results: List[str],
+        task_description: str,
+        feedback: str,
+        samples: int,
+    ) -> None:
+        """Log the conversation for debugging and analysis."""
+        conversation = {
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "task_description": task_description,
+            "feedback": feedback,
+            "samples_requested": samples,
+            "samples_generated": len(results),
+            "messages": messages,
+            "results": results,
+            "model_config": {
+                "model": self.model,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+            }
+        }
+        self.conversations.append(conversation)
+
+    def save_conversations(self, output_dir: str, iteration: int) -> None:
+        """Save all conversations to artifacts directory."""
+        output_path = Path(output_dir)
+        artifacts_dir = output_path / "artifacts"
+        artifacts_dir.mkdir(exist_ok=True)
+        
+        conversation_file = artifacts_dir / f"llm_conversations_iteration_{iteration}.json"
+        
+        with open(conversation_file, 'w', encoding='utf-8') as f:
+            json.dump(self.conversations, f, indent=2, ensure_ascii=False)
+        
+        self.logger.info(f"Saved {len(self.conversations)} conversations to {conversation_file}")
 
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the current model configuration."""

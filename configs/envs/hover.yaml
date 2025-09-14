@@ -50,7 +50,7 @@ eval_env:
   sensor_kwargs: []
   
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/empty_stage"
+    path: "datasets/visfly-beta/configs/scenes/box15_empty"
     render_settings:
       mode: fix
       view: custom

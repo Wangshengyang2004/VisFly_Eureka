@@ -35,7 +35,7 @@ class FlipEnv(DroneGymEnvsBase):
                 {
                     "class": "Uniform",
                     "kwargs": [
-                        {"position": {"mean": [0., 0., 1.5], "half": [0.2, 0.2, 0.1]}},
+                        {"position": {"mean": [0., 0., 0.8], "half": [4, 4, 0.2]}},
                     ]
                 }
         }

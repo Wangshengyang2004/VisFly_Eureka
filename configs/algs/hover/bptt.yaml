@@ -5,17 +5,17 @@ algorithm:
     features_extractor_kwargs:
       net_arch:
         state:
-          layer: [128, 64]
+          layer: [512]
        
     critic:
       dist: mse
       n_critics: 1
       net_arch:
-        layer: [128, 64]
+        layer: [512, 512]
     actor:
       dist: normal
       net_arch:
-        layer: [128, 64]
+        layer: [512, 512]
 
     activation_fn: relu
     optimizer_class: adam
@@ -34,8 +34,8 @@ algorithm:
 
 # Learning parameters  
 learn:
-  total_timesteps: 50000
-  log_interval: 20
+  total_timesteps: 5000000
+  log_interval: 200
 
 # Test parameters
 test:

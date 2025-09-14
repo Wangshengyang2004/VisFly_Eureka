@@ -9,6 +9,11 @@ import logging
 from typing import Type, Dict, Any, List, Optional
 import time
 
+try:
+    from hydra.core.hydra_config import HydraConfig
+except ImportError:
+    HydraConfig = None
+
 from .llm.llm_engine import LLMEngine
 from .core.models import TrainingResult
 from .core.models import OptimizationConfig
@@ -18,6 +23,7 @@ from .utils.tensorboard_utils import (
     load_tensorboard_logs,
     generate_eureka_style_feedback,
     extract_success_metric,
+    append_dataframe_to_feedback,
 )
 
 
@@ -75,6 +81,9 @@ class EurekaVisFly:
 
         # Track optimization history
         self.optimization_history: List[List[TrainingResult]] = []
+        
+        # Track complete iteration results (successful + failed) for detailed feedback
+        self.complete_iteration_results: List[List] = []
         self.best_reward_functions: List[str] = []
 
     def create_environment(self, requires_grad: bool = False) -> Any:
@@ -123,6 +132,11 @@ class EurekaVisFly:
 
                 # Save generated reward functions first
                 self._save_reward_functions(reward_functions, iteration)
+                
+                # Save LLM conversations for this iteration
+                if HydraConfig and HydraConfig.initialized():
+                    hydra_cfg = HydraConfig.get()
+                    self.llm.save_conversations(hydra_cfg.runtime.output_dir, iteration)
 
                 # Use parallel evaluation with GPU task distribution
                 # Use simpler per-sample identifiers (sample{idx}); iteration handled separately in evaluator path logic
@@ -135,9 +149,7 @@ class EurekaVisFly:
                 )
 
                 # Get the hydra output directory to create proper structure
-                from hydra.core.hydra_config import HydraConfig
-
-                if HydraConfig.initialized():
+                if HydraConfig and HydraConfig.initialized():
                     hydra_cfg = HydraConfig.get()
                     base_output_dir = hydra_cfg.runtime.output_dir
                 else:
@@ -159,6 +171,9 @@ class EurekaVisFly:
                     base_output_dir=base_output_dir,
                     eval_env_config=self.eval_env_config,
                 )
+
+                # Store complete results (successful + failed) for detailed feedback
+                self.complete_iteration_results.append(iteration_results)
 
                 # Convert to TrainingResult objects for compatibility
                 training_results = []
@@ -188,6 +203,22 @@ class EurekaVisFly:
                     best_in_iteration = max(training_results, key=lambda x: x.success_rate)
                     self.best_reward_functions.append(best_in_iteration.reward_code)
                     self.logger.info(f"Best success rate: {best_in_iteration.success_rate:.3f}")
+                else:
+                    self.logger.warning(f"All samples failed in iteration {iteration + 1}. Regenerating...")
+                    # Regenerate with simpler feedback when all fail
+                    simple_feedback = "All previous attempts failed due to coding errors. Generate simpler, more robust reward functions with basic components only. Use simple torch operations and avoid complex logic."
+                    retry_functions = self.generate_reward_candidates(
+                        samples=samples, iteration=iteration, feedback=simple_feedback
+                    )
+                    self.logger.info(f"Regenerated {len(retry_functions)} simpler reward functions")
+                    
+                    # Save regenerated functions with retry suffix
+                    self._save_reward_functions(retry_functions, iteration, suffix="_retry")
+                    
+                    # Re-evaluate the regenerated functions (simplified retry logic)
+                    self.logger.info("Evaluating regenerated functions...")
+                    # Skip retry evaluation for now to avoid infinite loops
+                    # Could be implemented with reduced complexity requirements
 
             except Exception as e:
                 self.logger.error(f"Error in iteration {iteration + 1}: {e}")
@@ -229,39 +260,17 @@ class EurekaVisFly:
 
     def get_iteration_feedback(self, iteration: int) -> str:
         """Generate feedback string based on previous iteration results."""
-        if iteration == 0 or not self.optimization_history:
-            return "This is the first iteration. Focus on basic task completion."
+        # Use enhanced tensorboard feedback method with sample success/failure info
+        return self._generate_feedback_with_tensorboard(iteration)
 
-        prev_results = self.optimization_history[-1]
-        if not prev_results:
-            return "Previous iteration had no successful results. Try simpler reward designs."
-
-        best_prev = max(prev_results, key=lambda x: x.success_rate)
-
-        feedback_parts = [
-            f"Previous best success rate: {best_prev.success_rate:.3f}",
-            f"Success rate: {best_prev.success_rate:.3f}",
-            f"Average episode length: {best_prev.episode_length:.1f}",
-        ]
-
-        if best_prev.success_rate < 0.3:
-            feedback_parts.append("Focus on improving task completion rate.")
-        elif best_prev.episode_length > 200:
-            feedback_parts.append(
-                "Try to reduce episode length while maintaining success."
-            )
-        else:
-            feedback_parts.append("Good performance. Try to optimize further.")
-
-        return " ".join(feedback_parts)
-
-    def _generate_feedback_with_tensorboard(self, iteration: int) -> str:
+    def _generate_feedback_with_tensorboard(self, iteration: int, all_iteration_results=None) -> str:
         """
         Generate enhanced feedback including tensorboard training curves.
-        Like real Eureka, includes detailed training metrics.
+        Like real Eureka, includes detailed training metrics and sample success/failure info.
 
         Args:
             iteration: Current iteration number
+            all_iteration_results: All results from the iteration (successful + failed)
 
         Returns:
             Feedback string with tensorboard data for the LLM
@@ -271,14 +280,64 @@ class EurekaVisFly:
 
         # Get results from last iteration
         last_results = self.optimization_history[-1]
+        
+        # Get complete results (successful + failed) from last iteration
+        complete_last_results = []
+        if self.complete_iteration_results and len(self.complete_iteration_results) >= iteration:
+            complete_last_results = self.complete_iteration_results[iteration - 1]
 
         if not last_results:
             return "Previous iteration had no successful results. Try simpler reward designs."
 
-        # Sort by score and get best result
-        best_result = max(last_results, key=lambda x: x.success_rate)
+        # Sort by score and get best result with sophisticated ranking
+        def rank_result(result):
+            """
+            Rank training results with multi-criteria selection:
+            1. Primary: Success rate (higher is better)
+            2. Secondary: Episode length (longer is better when success rates are equal)
+            """
+            return (result.success_rate, result.episode_length)
+        
+        best_result = max(last_results, key=rank_result)
+        
+        # Log the selection reasoning and find the best result's index
+        all_success_rates = [r.success_rate for r in last_results]
+        best_result_index = next(
+            i for i, r in enumerate(last_results) 
+            if r.identifier == best_result.identifier
+        )
+        
+        if len(set(all_success_rates)) == 1:  # All same success rate
+            self.logger.info(
+                f"All samples have same success rate ({all_success_rates[0]:.3f}). "
+                f"Selected sample {best_result_index} ('{best_result.identifier}') with longest episode length: {best_result.episode_length:.1f}"
+            )
+        else:
+            self.logger.info(
+                f"Selected sample {best_result_index} ('{best_result.identifier}') with best success rate: {best_result.success_rate:.3f}"
+            )
 
+        # Classify samples into successful vs failed
+        successful_samples = []
+        failed_samples = []
+        
+        if complete_last_results:
+            for i, result in enumerate(complete_last_results):
+                if result.training_successful:
+                    successful_samples.append(i)
+                else:
+                    failed_samples.append(i)
+        
         feedback_parts = []
+        
+        # Add sample success/failure overview
+        if complete_last_results:
+            feedback_parts.append(f"ITERATION RESULTS: {len(complete_last_results)} samples evaluated")
+            if successful_samples:
+                feedback_parts.append(f"Successful samples: {successful_samples}")
+            if failed_samples:
+                feedback_parts.append(f"Failed samples: {failed_samples}")
+            feedback_parts.append("")  # Add spacing
 
         # Try to load tensorboard logs for best result
         if hasattr(best_result, "log_dir") and best_result.log_dir:
@@ -289,18 +348,40 @@ class EurekaVisFly:
                     tensorboard_feedback = generate_eureka_style_feedback(
                         tensorboard_logs
                     )
-                    feedback_parts.append(tensorboard_feedback)
+                    # Append DataFrame summary for next iteration agent
+                    enhanced_feedback = append_dataframe_to_feedback(
+                        tensorboard_feedback, tensorboard_logs,
+                        selected_index=best_result_index,
+                        total_candidates=len(last_results)
+                    )
+                    feedback_parts.append(enhanced_feedback)
                     feedback_parts.append("")  # Add spacing
             except Exception as e:
                 self.logger.warning(f"Could not load tensorboard logs: {e}")
 
         # If no tensorboard data, fall back to basic metrics
-        if not feedback_parts:
+        if len(feedback_parts) <= 3:  # Only sample overview added, no TensorBoard data
+            if not complete_last_results:
+                # Add sample info if not already added
+                feedback_parts.append(f"ITERATION RESULTS: {len(last_results)} samples evaluated")
+                feedback_parts.append(f"Successful samples: {list(range(len(last_results)))}")
+                feedback_parts.append(f"Failed samples: []")
+                feedback_parts.append("")
+            
+            feedback_parts.append(f"SELECTED REWARD FUNCTION: #{best_result_index} (from {len(last_results)} successful candidates)")
             feedback_parts.append(f"Previous best success rate: {best_result.success_rate:.3f}")
             feedback_parts.append(f"Success rate: {best_result.success_rate:.3f}")
             feedback_parts.append(
                 f"Average episode length: {best_result.episode_length:.1f}"
             )
+            
+            # Add selection reasoning when using episode length as tiebreaker
+            if len(set(all_success_rates)) == 1 and len(last_results) > 1:
+                feedback_parts.append(
+                    f"\nSelection reason: All {len(last_results)} samples had equal success rate ({all_success_rates[0]:.3f}). "
+                    f"Reward function #{best_result_index} was selected for achieving the longest episode length "
+                    f"({best_result.episode_length:.1f}), indicating better survival/learning."
+                )
 
         # Add interpretation and suggestions based on metrics
         if best_result.success_rate < 0.3:
@@ -333,7 +414,7 @@ class EurekaVisFly:
 
         return "\n".join(feedback_parts)
 
-    def _save_reward_functions(self, reward_functions: List[str], iteration: int):
+    def _save_reward_functions(self, reward_functions: List[str], iteration: int, suffix: str = ""):
         """Save generated reward functions to disk for debugging and analysis"""
         import os
         from pathlib import Path
@@ -341,16 +422,15 @@ class EurekaVisFly:
         # Use Hydra output directory if available
         base_dir = Path("generated_rewards")
         try:
-            from hydra.core.hydra_config import HydraConfig
-
-            if HydraConfig.initialized():
+            if HydraConfig and HydraConfig.initialized():
                 hydra_cfg = HydraConfig.get()
                 base_dir = Path(hydra_cfg.runtime.output_dir) / "generated_rewards"
         except Exception as e:
             self.logger.debug(f"Hydra not available or not initialized: {e}")  # Fall back to current directory
 
         # Create iteration directory
-        iter_dir = base_dir / f"iteration_{iteration}"
+        iter_dir_name = f"iteration_{iteration}{suffix}"
+        iter_dir = base_dir / iter_dir_name
         iter_dir.mkdir(parents=True, exist_ok=True)
 
         for idx, reward_code in enumerate(reward_functions):

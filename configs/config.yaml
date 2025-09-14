@@ -2,9 +2,9 @@
 # This is the main config file that references specific algorithm and environment configs
 
 defaults:
-  - envs: navigation
-  - llm: glm-4.5
-  - task: navigation_task
+  - envs: hover
+  - llm: gpt-4o
+  - task: hover_task
   - api_keys
   - _self_
 
@@ -16,18 +16,12 @@ pipeline:
   
 # Optimization parameters
 optimization:
-  iterations: 2           # Number of optimization iterations
-  samples: 5            # Reward functions per iteration  
+  iterations: 1           # Number of optimization iterations
+  samples: 1            # Reward functions per iteration
   algorithm: "bptt"      # Training algorithm: "bptt", "ppo", or "shac"
-  environment: "navigation"  # Environment name
   evaluation_episodes: 10  # Episodes for final evaluation
-  
-# Training wrapper configuration
-# Uses config files from configs/envs/{environment}/ and configs/algs/{environment}/
+
 training:
-  # Config file pattern: configs/algs/{environment}/{algorithm}.yaml
-  # Environment config: configs/envs/{environment}/env.yaml
-  
   # Global overrides (optional)
   save_dir: "./results/training"
   comment: "eureka_experiment"

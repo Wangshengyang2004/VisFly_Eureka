@@ -283,26 +283,145 @@ def find_tensorboard_logdir(job_output_dir: str) -> Optional[str]:
     """
     job_path = Path(job_output_dir)
 
-    # Common tensorboard directory patterns
-    patterns = [
-        "**/logs",
-        "**/tensorboard",
-        "**/tb_logs",
-        "**/runs",
-        "**/*_1",  # VisFly/stable-baselines3 pattern
-    ]
-
-    for pattern in patterns:
-        matches = list(job_path.glob(pattern))
-        if matches:
-            return str(matches[0])
-
-    # Look for event files directly
+    # First, look for event files directly (most reliable)
     event_files = list(job_path.glob("**/events.out.tfevents.*"))
     if event_files:
         return str(event_files[0].parent)
 
+    # Common tensorboard directory patterns (fallback)
+    patterns = [
+        "**/*_1",  # VisFly/stable-baselines3 pattern (prioritize nested dirs)
+        "**/logs", 
+        "**/tb_logs",
+        "**/runs",
+        "**/tensorboard",  # Check this last since it might be parent dir
+    ]
+
+    for pattern in patterns:
+        matches = list(job_path.glob(pattern))
+        # Check if any matches actually contain event files
+        for match in matches:
+            if list(Path(match).glob("events.out.tfevents.*")):
+                return str(match)
+
     return None
+
+
+def create_tensorboard_dataframe(logs: Dict[str, List[float]]) -> pd.DataFrame:
+    """
+    Create a pandas DataFrame from TensorBoard logs for next iteration feedback.
+    
+    Args:
+        logs: Dictionary mapping metric names to value lists
+        
+    Returns:
+        DataFrame with training metrics over time
+    """
+    if not logs:
+        return pd.DataFrame()
+    
+    # Find the maximum length to align all metrics
+    max_length = max(len(values) for values in logs.values()) if logs else 0
+    
+    # Create DataFrame with step column
+    df_data = {"step": list(range(max_length))}
+    
+    # Add each metric, padding with NaN if necessary
+    for metric_name, values in logs.items():
+        if values:
+            # Pad values to match max length
+            padded_values = values + [np.nan] * (max_length - len(values))
+            df_data[metric_name] = padded_values
+    
+    return pd.DataFrame(df_data)
+
+
+def sample_dataframe_uniformly(df: pd.DataFrame, n_samples: int = 10) -> pd.DataFrame:
+    """
+    Sample DataFrame uniformly to reduce size while preserving training progression.
+    
+    Args:
+        df: Original DataFrame
+        n_samples: Number of samples to extract (default 10)
+        
+    Returns:
+        Sampled DataFrame with uniform intervals
+    """
+    if df.empty or len(df) <= n_samples:
+        return df
+    
+    # Create uniform indices
+    indices = np.linspace(0, len(df) - 1, n_samples, dtype=int)
+    return df.iloc[indices].copy()
+
+
+def append_dataframe_to_feedback(
+    feedback: str, 
+    tensorboard_logs: Dict[str, List[float]],
+    selected_index: int = None,
+    total_candidates: int = None
+) -> str:
+    """
+    Append TensorBoard data as DataFrame to feedback for next iteration agent.
+    Includes uniformly sampled data points to keep feedback concise.
+    
+    Args:
+        feedback: Existing feedback string
+        tensorboard_logs: TensorBoard logs dictionary
+        
+    Returns:
+        Enhanced feedback with DataFrame summary and sampled data
+    """
+    if not tensorboard_logs:
+        return feedback
+    
+    df = create_tensorboard_dataframe(tensorboard_logs)
+    if df.empty:
+        return feedback
+    
+    # Sample DataFrame to keep feedback manageable
+    sampled_df = sample_dataframe_uniformly(df, n_samples=10)
+    
+    # Add DataFrame summary to feedback
+    enhanced_feedback = feedback + "\n\n"
+    
+    # Add reward function selection info if provided
+    if selected_index is not None:
+        if total_candidates is not None:
+            enhanced_feedback += f"## SELECTED REWARD FUNCTION: #{selected_index} (from {total_candidates} candidates)\n"
+        else:
+            enhanced_feedback += f"## SELECTED REWARD FUNCTION: #{selected_index}\n"
+        enhanced_feedback += "The following TensorBoard data corresponds to this specific reward function.\n\n"
+    
+    enhanced_feedback += "## TensorBoard Training Data Summary\n"
+    enhanced_feedback += f"Original dataset shape: {df.shape}, Sampled: {sampled_df.shape}\n"
+    enhanced_feedback += f"Available metrics: {list(df.columns)}\n\n"
+    
+    # Add key statistics from full data
+    enhanced_feedback += "### Key Statistics (Full Training):\n"
+    for column in df.columns:
+        if column != "step" and not df[column].isna().all():
+            values = df[column].dropna()
+            if len(values) > 0:
+                enhanced_feedback += f"- {column}: mean={values.mean():.3f}, std={values.std():.3f}, "
+                enhanced_feedback += f"min={values.min():.3f}, max={values.max():.3f}\n"
+    
+    # Add sampled data for detailed analysis
+    enhanced_feedback += "\n### Sampled Training Progression (10 points):\n"
+    enhanced_feedback += "```\n"
+    enhanced_feedback += sampled_df.to_string(float_format='%.3f', max_cols=8)
+    enhanced_feedback += "\n```\n"
+    
+    # Add trend information
+    enhanced_feedback += "\n### Training Trends:\n"
+    for column in ["ep_rew_mean", "success_rate", "rollout/ep_rew_mean", "rollout/success_rate"]:
+        if column in df.columns and not df[column].isna().all():
+            values = df[column].dropna()
+            if len(values) > 1:
+                trend = "increasing" if values.iloc[-1] > values.iloc[0] else "decreasing"
+                enhanced_feedback += f"- {column}: {trend} trend (start: {values.iloc[0]:.3f}, end: {values.iloc[-1]:.3f})\n"
+    
+    return enhanced_feedback
 
 
 def extract_success_metric(logs: Dict[str, List[float]]) -> float:

@@ -1,7 +1,7 @@
 # GPT-4o configuration
 
 llm:
-  vendor: "ifopen"
+  vendor: "aigc35"
   model: "gpt-4o"
   
   # Generation parameters

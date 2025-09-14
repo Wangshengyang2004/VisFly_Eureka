@@ -13,7 +13,6 @@ from typing import List
 
 from .eureka_visfly import EurekaVisFly
 from .core.models import OptimizationReport
-from .utils.gpu_monitor import GPUMonitor, DynamicGPUResourceManager
 
 
 class EurekaPipeline:
@@ -51,9 +50,8 @@ class EurekaPipeline:
         self.artifacts_dir = self.output_dir / "artifacts"
         self.artifacts_dir.mkdir(exist_ok=True, parents=True)
 
-        # Initialize GPU monitoring and resource management
-        self.gpu_monitor = GPUMonitor(update_interval=5.0)
-        self.gpu_resource_manager = DynamicGPUResourceManager(self.gpu_monitor)
+        # GPU monitoring is handled by the SubprocessRewardEvaluator
+        # No need for a separate GPU monitor in the pipeline
 
 
 

@@ -126,19 +126,21 @@ class RacingEnv(DroneGymEnvsBase):
             self,
             indices=None
     ) -> Dict:
+        _next_targets_i_clamp = th.stack([self._next_target_i + i for i in range(self._next_target_num)]).T % len(
+            self.targets)
+        next_targets = self.targets[_next_targets_i_clamp]
+        relative_pos = (next_targets - self.position.unsqueeze(1)).reshape(self.num_envs, -1)
+        state = th.hstack([
+            relative_pos / self.max_sense_radius,
+            self.orientation,
+            self.velocity / 10,
+            self.angular_velocity / 10,
+        ]).to(self.device)
 
-        obs = TensorDict({
-            "state": self.state,
-            "gate": self._next_target_i,
+        return TensorDict({
+            "state": state,
+            "gate": self._next_target_i.unsqueeze(1).clone().detach(),
         })
-
-        if self.latent is not None:
-            if not self.requires_grad:
-                obs["latent"] = self.latent.cpu().numpy()
-            else:
-                obs["latent"] = self.latent
-
-        return obs
 
     def get_success(self) -> th.Tensor:
         _next_target_i_clamp = self._next_target_i
@@ -214,57 +216,3 @@ class RacingEnv(DroneGymEnvsBase):
                     self.is_pass_next * self.success_r
             )
             return reward
-
-
-class RacingEnv2(RacingEnv):
-
-    def __init__(
-            self,
-            num_agent_per_scene: int = 1,
-            num_scene: int = 1,
-            seed: int = 42,
-            visual: bool = True,
-            requires_grad: bool = False,
-            random_kwargs: dict = {},
-            dynamics_kwargs: dict = {},
-            scene_kwargs: dict = {},
-            sensor_kwargs: list = [],
-            device: str = "cpu",
-            max_episode_steps: int = 256,
-            latent_dim=None,
-            tensor_output: bool = False,
-    ):
-        super().__init__(
-            num_agent_per_scene=num_agent_per_scene,
-            num_scene=num_scene,
-            seed=seed,
-            visual=visual,
-            requires_grad=requires_grad,
-            random_kwargs=random_kwargs,
-            dynamics_kwargs=dynamics_kwargs,
-            scene_kwargs=scene_kwargs,
-            sensor_kwargs=sensor_kwargs,
-            device=device,
-            max_episode_steps=max_episode_steps,
-            latent_dim=latent_dim,
-            tensor_output=tensor_output,
-        )
-
-    def get_observation(
-            self,
-            indices=None
-    ) -> Dict:
-        _next_targets_i_clamp = th.stack([self._next_target_i + i for i in range(self._next_target_num)]).T % len(self.targets)
-        next_targets = self.targets[_next_targets_i_clamp]
-        relative_pos = (next_targets - self.position.unsqueeze(1)).reshape(self.num_envs, -1)
-        state = th.hstack([
-            relative_pos / self.max_sense_radius,
-            self.orientation,
-            self.velocity / 10,
-            self.angular_velocity / 10,
-        ]).to(self.device)
-
-        return TensorDict({
-            "state": state,
-            "gate": self._next_target_i.unsqueeze(1).clone().detach(),
-        })

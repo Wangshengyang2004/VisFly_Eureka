@@ -33,6 +33,21 @@ BPTT Gradient Tips (CRITICAL):
 - ALWAYS use (self.angular_velocity - 0) for gradient safety
 - This creates new tensors that preserve gradient flow
 
+COMMON FAILURE PATTERNS TO AVOID:
+- DO NOT use torch.min(tensor, dim=int) - use torch.min(tensor, dim=1) where dim is integer literal
+- DO NOT mix numpy operations - stick to pure torch operations only
+- DO NOT use .flatten() with positional dim argument - use .flatten(start_dim=1)
+- DO NOT access self.sensor_obs - use self.collision_dis for obstacle detection
+- DO NOT use torch.amin() - use torch.min() instead
+- DO NOT use operations that create numpy arrays or require numpy imports
+
+Safe Tensor Operations:
+- torch.norm(tensor, dim=1) for vector norms
+- torch.where(condition, value_true, value_false) for conditional values
+- torch.clamp(tensor, min=val, max=val) for value limiting
+- torch.exp(), torch.log(), torch.sqrt() for math operations
+- tensor.unsqueeze(1) or tensor.unsqueeze(-1) for dimension expansion
+
 Design principles:
 - All variables are torch tensors (except _step_count, num_agent)
 - Use torch operations to compute your reward logic

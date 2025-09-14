@@ -9,15 +9,6 @@ task:
     Navigate drone to target position efficiently while avoiding obstacles.
     
     The drone must:
-    1. Reach the target position with high precision (within 0.5m)
-    2. Avoid collisions using depth sensor data 
+    1. Reach the target position with high precision
+    2. Avoid collisions
     3. Maintain stable flight dynamics
-    4. Minimize episode length for efficiency
-    5. Handle multiple agents simultaneously
-    
-    Reward function should:
-    - Use distance-based rewards for navigation
-    - Incorporate depth sensor for obstacle avoidance
-    - Penalize unstable flight (high angular velocities)
-    - Provide shaping rewards for smooth trajectories
-    - Balance multiple objectives appropriately

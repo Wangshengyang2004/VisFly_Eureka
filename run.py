@@ -76,7 +76,7 @@ def parse_args():
         "--env",
         "-e",
         type=str,
-        default="navigation",
+        default="hover",
         choices=[
             "navigation",
             "hover",

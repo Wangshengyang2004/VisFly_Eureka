@@ -16,10 +16,10 @@ Usage:
 import os
 import sys
 import logging
+import torch
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
-import torch
 
 # Suppress verbose third-party logging
 logging.getLogger("numexpr").setLevel(logging.WARNING)
@@ -147,9 +147,15 @@ def prepare_eval_env_config(cfg: DictConfig, base_env_config: dict) -> dict:
 
 def create_eureka_controller(cfg: DictConfig, logger: logging.Logger) -> EurekaVisFly:
     """Create and configure EurekaVisFly controller from config"""
-    
+
+    # Derive environment name from task category
+    if 'task' not in cfg or 'task' not in cfg.task or 'category' not in cfg.task.task:
+        raise ValueError("Task category not specified in configuration. Please ensure task config is loaded.")
+
+    env_name = cfg.task.task.category
+
     # Load environment class
-    env_class = load_environment_class(cfg.optimization.environment)
+    env_class = load_environment_class(env_name)
     
     # Prepare configurations
     env_kwargs = prepare_env_config(cfg.envs.env)
@@ -159,6 +165,17 @@ def create_eureka_controller(cfg: DictConfig, logger: logging.Logger) -> EurekaV
     
     # Create Eureka controller  
     env_device = env_kwargs["device"]
+    
+    # Let GPU monitor suggest optimal workers based on system resources
+    max_workers = cfg.execution.max_workers
+    if env_device == "cuda" and torch.cuda.is_available():
+        from quadro_llm.utils.gpu_monitor import GPUMonitor
+        gpu_monitor = GPUMonitor(update_interval=1.0)
+        suggested_workers = gpu_monitor.suggest_optimal_workers(max_workers)
+        if suggested_workers != max_workers:
+            logger.info(f"GPU system suggests {suggested_workers} workers (config: {max_workers})")
+            max_workers = suggested_workers
+    
     return EurekaVisFly(
         env_class=env_class,
         task_description=cfg.task.task.description,
@@ -166,7 +183,7 @@ def create_eureka_controller(cfg: DictConfig, logger: logging.Logger) -> EurekaV
         env_kwargs=env_kwargs,
         optimization_config=opt_config,
         device=env_device,
-        max_workers=cfg.execution.max_workers,
+        max_workers=max_workers,
         eval_env_config=eval_env_config,
     )
 
@@ -179,7 +196,7 @@ def print_configuration_summary(cfg: DictConfig, logger: logging.Logger):
     logger.info("=" * 60)
     logger.info(f"Pipeline: {cfg.pipeline.name}")
     logger.info(f"Task: {cfg.task.task.name} ({cfg.task.task.category})")
-    logger.info(f"Environment: {cfg.optimization.environment}")
+    logger.info(f"Environment: {cfg.task.task.category}")
     logger.info(f"LLM: {cfg.llm.llm.vendor}/{cfg.llm.llm.model}")
     logger.info(f"Algorithm: {cfg.optimization.algorithm.upper()}")
     logger.info(f"Device: {cfg.execution.device.upper()}")

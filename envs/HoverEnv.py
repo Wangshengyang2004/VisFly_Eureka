@@ -63,8 +63,8 @@ class HoverEnv(DroneGymEnvsBase):
         self.target = th.ones((self.num_envs, 1)) @ th.as_tensor(target_pos).reshape(1, -1)
         
         # Set success criteria
-        self.success_radius = 0.5
-        
+        self.success_radius = 0.1
+        self.success_speed = 0.1
         # Override observation space to only include state
         self.observation_space = spaces.Dict({
             "state": spaces.Box(
@@ -108,12 +108,11 @@ class HoverEnv(DroneGymEnvsBase):
     def get_success(self) -> th.Tensor:
         """Check if agents are hovering successfully near target"""
         position_success = (self.position - self.target).norm(dim=1) <= self.success_radius
-        velocity_success = self.velocity.norm(dim=1) <= 0.1  # Low velocity for stable hovering
+        velocity_success = self.velocity.norm(dim=1) <= self.success_speed
         return position_success & velocity_success
     
     def get_failure(self) -> th.Tensor:
         """Check for collision or other failure conditions"""
         # Use collision detection from base class if available
-        if hasattr(self, 'is_collision'):
-            return self.is_collision
-        return th.full((self.num_agent,), False)
+        return self.is_collision
+        # return th.full((self.num_agent,), False)
