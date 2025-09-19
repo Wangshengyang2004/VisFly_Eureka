@@ -57,6 +57,53 @@ class TestLLMConfiguration:
             assert llm.supports_n_parameter == False
             assert llm.max_concurrent == 10
 
+    def test_token_usage_accumulates_and_logs(self):
+        """Ensure token usage counters accumulate and surface in conversations."""
+        config = {
+            "model": "test-model",
+            "api_key": "test-key",
+            "base_url": "https://test.api.com",
+            "temperature": 0.7,
+            "max_tokens": 256,
+            "timeout": 60,
+            "max_retries": 2,
+        }
+
+        with patch('quadro_llm.llm.llm_engine.OpenAI') as mock_openai:
+            mock_client = Mock()
+            mock_response = Mock()
+            mock_response.usage = {
+                "prompt_tokens": 42,
+                "completion_tokens": 18,
+                "total_tokens": 60,
+            }
+            choice = Mock()
+            choice.message.content = (
+                "```python\n"
+                "def get_reward(self):\n"
+                "    return torch.zeros(self.num_agent)\n"
+                "```"
+            )
+            mock_response.choices = [choice]
+            mock_client.chat.completions.create.return_value = mock_response
+            mock_openai.return_value = mock_client
+
+            llm = LLMEngine(**config)
+            with patch(
+                'quadro_llm.llm.llm_engine.extract_env_code_without_reward',
+                return_value="class DummyEnv: ...",
+            ):
+                rewards = llm.generate_reward_functions(
+                    "desc", {}, "", samples=1, env_class=object
+                )
+
+            assert len(rewards) == 1
+            usage = llm.get_token_usage()
+            assert usage["prompt_tokens"] == 42
+            assert usage["completion_tokens"] == 18
+            assert usage["total_tokens"] == 60
+            assert llm.conversations[0]["token_usage"]["total_tokens"] == 60
+
     def test_batching_strategy_selection(self):
         """Test batching strategy selection logic."""
         base_config = {
@@ -74,7 +121,11 @@ class TestLLMConfiguration:
         with patch('quadro_llm.llm.llm_engine.OpenAI'):
             llm = LLMEngine(**config)
             with patch.object(llm, '_generate_with_n_parameter', return_value=[]) as mock_n:
-                llm.generate_reward_functions("test", {}, "", 3, None)
+                with patch(
+                    'quadro_llm.llm.llm_engine.extract_env_code_without_reward',
+                    return_value="class DummyEnv: ...",
+                ):
+                    llm.generate_reward_functions("test", {}, "", 3, object)
                 mock_n.assert_called_once()
 
         # Test sequential strategy  
@@ -82,7 +133,11 @@ class TestLLMConfiguration:
         with patch('quadro_llm.llm.llm_engine.OpenAI'):
             llm = LLMEngine(**config)
             with patch.object(llm, '_generate_sequential', return_value=[]) as mock_seq:
-                llm.generate_reward_functions("test", {}, "", 3, None)
+                with patch(
+                    'quadro_llm.llm.llm_engine.extract_env_code_without_reward',
+                    return_value="class DummyEnv: ...",
+                ):
+                    llm.generate_reward_functions("test", {}, "", 3, object)
                 mock_seq.assert_called_once()
 
     def test_thinking_parameter_application(self):
@@ -130,8 +185,12 @@ class TestLLMConfiguration:
             llm = LLMEngine(**config)
             with patch.object(llm, '_generate_sequential', return_value=[]) as mock_seq:
                 with patch.object(llm.logger, 'warning') as mock_warn:
-                    llm.generate_reward_functions("test", {}, "", 3, None)
-                    
+                    with patch(
+                        'quadro_llm.llm.llm_engine.extract_env_code_without_reward',
+                        return_value="class DummyEnv: ...",
+                    ):
+                        llm.generate_reward_functions("test", {}, "", 3, object)
+
                     mock_seq.assert_called_once()
                     mock_warn.assert_called_once()
                     assert "Unknown batching strategy" in str(mock_warn.call_args)

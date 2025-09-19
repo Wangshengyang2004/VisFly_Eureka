@@ -10,6 +10,8 @@ import yaml
 import argparse
 from pathlib import Path
 import sys
+from unittest.mock import patch
+import pytest
 
 # Add project paths
 PROJECT_ROOT = Path(__file__).parent.parent.absolute()  # Go up one level from tests/
@@ -24,6 +26,8 @@ try:
     TEST_ENV_CLASS = NavigationEnv
 except ImportError:
     TEST_ENV_CLASS = None
+
+pytestmark = [pytest.mark.slow, pytest.mark.llm]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -100,22 +104,26 @@ def test_reward_generation(model_name="glm-4.5", samples=3):
     try:
         config = load_llm_config(model_name)
         llm = LLMEngine(**config)
-        
+
         task_description = "Navigate to target position while avoiding obstacles"
         context_info = {
             "observation_space": "position, velocity, orientation",
             "action_space": "thrust, roll, pitch, yaw",
             "environment": "3D quadrotor simulation"
         }
-        
-        start_time = time.time()
-        response = llm.generate_reward_functions(
-            task_description=task_description,
-            context_info=context_info,
-            feedback="",
-            samples=samples,
-            env_class=TEST_ENV_CLASS
-        )
+
+        if TEST_ENV_CLASS is None:
+            pytest.skip("Navigation environment class not available for reward generation test")
+
+        with patch('quadro_llm.llm.llm_engine.extract_env_code_without_reward', return_value="class DummyEnv: ..."):
+            start_time = time.time()
+            response = llm.generate_reward_functions(
+                task_description=task_description,
+                context_info=context_info,
+                feedback="",
+                samples=samples,
+                env_class=TEST_ENV_CLASS
+            )
         end_time = time.time()
         
         duration = end_time - start_time

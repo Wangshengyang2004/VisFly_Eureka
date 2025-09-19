@@ -10,6 +10,7 @@ import time
 import asyncio
 import concurrent.futures
 import json
+from collections import Counter
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
@@ -51,6 +52,8 @@ class LLMEngine:
         batching_strategy: str = "n_parameter",
         supports_n_parameter: bool = True,
         max_concurrent: int = 10,
+        include_api_doc: bool = False,
+        api_doc_path: Optional[str] = None,
     ):
         """
         Initialize the LLM engine.
@@ -77,6 +80,8 @@ class LLMEngine:
         self.batching_strategy = batching_strategy
         self.supports_n_parameter = supports_n_parameter
         self.max_concurrent = max_concurrent
+        self.include_api_doc = include_api_doc
+        self.api_doc_path = api_doc_path
 
         self.logger = logging.getLogger(__name__)
 
@@ -91,6 +96,37 @@ class LLMEngine:
         
         # Initialize conversation logging
         self.conversations: List[Dict[str, Any]] = []
+
+        # Preload optional API reference text for prompt augmentation
+        self.api_doc_content: Optional[str] = None
+        if self.include_api_doc:
+            self.api_doc_content = self._load_api_doc()
+
+        # Track token usage events for reporting
+        self._token_usage: Counter = Counter()
+        self._token_usage_events: List[Dict[str, Any]] = []
+
+    def _load_api_doc(self) -> Optional[str]:
+        """Load the environment API reference used to prime the LLM."""
+        try:
+            base_path = Path(__file__).resolve().parents[2]
+            if self.api_doc_path:
+                candidate = Path(self.api_doc_path)
+                doc_path = candidate if candidate.is_absolute() else base_path / candidate
+            else:
+                doc_path = base_path / "api-doc.txt"
+
+            if not doc_path.exists():
+                self.logger.warning(
+                    "API doc requested but not found at %s; proceeding without it",
+                    doc_path,
+                )
+                return None
+
+            return doc_path.read_text(encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.logger.warning("Failed to load API reference: %s", exc)
+            return None
 
     def generate_reward_functions(
         self,
@@ -115,20 +151,31 @@ class LLMEngine:
         """
         # Generate reward functions
 
+        if env_class is None:
+            raise ValueError(
+                "env_class must be provided to generate reward functions. "
+                "Ensure the caller passes a valid VisFly environment class."
+            )
+
         # Extract environment code without reward (like real Eureka)
-        env_code = ""
         env_code = extract_env_code_without_reward(env_class)
 
         # Create prompts
         system_prompt = create_system_prompt()
         user_prompt = create_user_prompt(
-            task_description, context_info, feedback, env_code
+            task_description,
+            context_info,
+            feedback,
+            env_code,
+            api_doc=self.api_doc_content if self.api_doc_content else None,
         )
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+
+        usage_before = self._usage_snapshot()
 
         # Use appropriate batching strategy based on configuration
         if self.batching_strategy == "n_parameter" and self.supports_n_parameter:
@@ -143,10 +190,19 @@ class LLMEngine:
             # Fallback to sequential if strategy is unknown
             self.logger.warning(f"Unknown batching strategy '{self.batching_strategy}', falling back to sequential")
             results = self._generate_sequential(messages, samples)
-        
+
+        usage_delta = self._usage_delta(usage_before)
+
         # Log the conversation
-        self._log_conversation(messages, results, task_description, feedback, samples)
-        
+        self._log_conversation(
+            messages,
+            results,
+            task_description,
+            feedback,
+            samples,
+            token_usage=usage_delta,
+        )
+
         return results
 
     def _generate_with_n_parameter(self, messages: List[Dict], samples: int) -> List[str]:
@@ -165,6 +221,61 @@ class LLMEngine:
                 time.sleep(1)  # Brief pause between batches
 
         return reward_functions
+
+    def _usage_snapshot(self) -> Dict[str, int]:
+        return dict(self._token_usage)
+
+    def _usage_delta(self, before: Dict[str, int]) -> Dict[str, int]:
+        delta: Dict[str, int] = {}
+        current = self._token_usage
+        keys = set(before.keys()) | set(current.keys())
+        for key in keys:
+            diff = current.get(key, 0) - before.get(key, 0)
+            if diff:
+                delta[key] = diff
+        return delta
+
+    def _normalize_usage(self, usage: Any) -> Dict[str, int]:
+        if usage is None:
+            return {}
+        if isinstance(usage, dict):
+            raw = usage
+        else:
+            raw = {}
+            for key in [
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "input_tokens",
+                "output_tokens",
+                "cached_tokens",
+            ]:
+                if hasattr(usage, key):
+                    raw[key] = getattr(usage, key)
+            if hasattr(usage, "to_dict"):
+                try:
+                    raw.update(usage.to_dict())
+                except Exception:  # pragma: no cover
+                    pass
+        normalized: Dict[str, int] = {}
+        for key, value in raw.items():
+            if isinstance(value, (int, float)):
+                normalized[key] = int(value)
+        return normalized
+
+    def _record_usage(self, usage: Any, meta: Optional[Dict[str, Any]] = None) -> None:
+        usage_dict = self._normalize_usage(usage)
+        if not usage_dict:
+            return
+        self._token_usage.update(usage_dict)
+        event = {
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "usage": usage_dict,
+        }
+        if meta:
+            event["meta"] = meta
+        self._token_usage_events.append(event)
+        self.logger.debug("Token usage recorded: %s", usage_dict)
 
     def _generate_single_batch_with_n(self, messages: List[Dict], n_samples: int) -> List[str]:
         """
@@ -194,6 +305,11 @@ class LLMEngine:
                     request_params["extra_body"] = {"thinking": {"type": "disabled"}}
                 
                 response = self.client.chat.completions.create(**request_params)
+
+                self._record_usage(
+                    getattr(response, "usage", None),
+                    meta={"strategy": "n_parameter", "requested": n_samples},
+                )
 
                 # Extract reward functions from responses
                 reward_functions = []
@@ -242,6 +358,11 @@ class LLMEngine:
                         request_params["extra_body"] = {"thinking": {"type": "disabled"}}
                     
                     response = self.client.chat.completions.create(**request_params)
+
+                    self._record_usage(
+                        getattr(response, "usage", None),
+                        meta={"strategy": "sequential", "sample_index": i},
+                    )
                     
                     # Extract reward function from single response
                     if response.choices:
@@ -286,7 +407,12 @@ class LLMEngine:
                     request_params["extra_body"] = {"thinking": {"type": "disabled"}}
                 
                 response = self.client.chat.completions.create(**request_params)
-                
+
+                self._record_usage(
+                    getattr(response, "usage", None),
+                    meta={"strategy": "async", "session_id": session_id},
+                )
+
                 if response.choices:
                     content = response.choices[0].message.content
                     return extract_reward_function(content)
@@ -341,7 +467,12 @@ class LLMEngine:
                     request_params["extra_body"] = {"thinking": {"type": "disabled"}}
                 
                 response = self.client.chat.completions.create(**request_params)
-                
+
+                self._record_usage(
+                    getattr(response, "usage", None),
+                    meta={"strategy": "thread_pool", "session_id": session_id},
+                )
+
                 if response.choices:
                     content = response.choices[0].message.content
                     return extract_reward_function(content)
@@ -403,6 +534,8 @@ class LLMEngine:
             request_params["extra_body"] = {"thinking": {"type": "disabled"}}
         
         response = self.client.chat.completions.create(**request_params)
+
+        self._record_usage(getattr(response, "usage", None), meta={"strategy": "healthcheck"})
 
         self.logger.info("API connection test successful")
 
@@ -492,6 +625,7 @@ class LLMEngine:
         task_description: str,
         feedback: str,
         samples: int,
+        token_usage: Optional[Dict[str, int]] = None,
     ) -> None:
         """Log the conversation for debugging and analysis."""
         conversation = {
@@ -506,7 +640,8 @@ class LLMEngine:
                 "model": self.model,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
-            }
+            },
+            "token_usage": token_usage or {},
         }
         self.conversations.append(conversation)
 
@@ -532,3 +667,7 @@ class LLMEngine:
             "timeout": self.timeout,
             "max_retries": self.max_retries,
         }
+
+    def get_token_usage(self) -> Dict[str, int]:
+        """Return aggregated token usage counters."""
+        return dict(self._token_usage)

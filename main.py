@@ -88,6 +88,7 @@ def load_llm_config(cfg: DictConfig) -> dict:
     No default values - config is always correct and complete.
     """
     import yaml
+    from omegaconf import OmegaConf
     
     api_keys_path = PROJECT_ROOT / "configs" / "api_keys.yaml"
     
@@ -120,7 +121,16 @@ def load_llm_config(cfg: DictConfig) -> dict:
             llm_config["supports_n_parameter"] = batching.supports_n_parameter
         if hasattr(batching, 'max_concurrent'):
             llm_config["max_concurrent"] = batching.max_concurrent
-    
+
+    if "prompt" in cfg.llm:
+        prompt_cfg = OmegaConf.to_container(cfg.llm.prompt, resolve=True)
+        include_api_doc = prompt_cfg.get("include_api_doc")
+        if include_api_doc is not None:
+            llm_config["include_api_doc"] = bool(include_api_doc)
+        api_doc_path = prompt_cfg.get("api_doc_path")
+        if api_doc_path:
+            llm_config["api_doc_path"] = api_doc_path
+
     return llm_config
 
 

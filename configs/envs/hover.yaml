@@ -12,7 +12,7 @@ env:
   
   # Simple scene
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_empty"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty"
   
   dynamics_kwargs:
     dt: 0.03
@@ -50,7 +50,7 @@ eval_env:
   sensor_kwargs: []
   
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_empty"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty"
     render_settings:
       mode: fix
       view: custom

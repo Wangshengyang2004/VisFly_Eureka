@@ -27,3 +27,7 @@ llm:
     supports_n_parameter: true     # OpenAI supports n parameter
     strategy: "n_parameter"        # Options: "n_parameter", "sequential", "async", "multiprocessing"
     max_concurrent: 10             # For async/multiprocessing strategies
+
+  prompt:
+    include_api_doc: true
+    api_doc_path: "api-doc.txt"

@@ -215,14 +215,15 @@ def get_display_metric_name(metric_name: str) -> str:
     name_mapping = {
         "ep_rew_mean": "episode_reward",
         "ep_len_mean": "episode_length",
-        "success_rate": "consecutive_successes",
+        "success_rate": "task_score",
         "actor_loss": "actor_loss",
         "critic_loss": "critic_loss",
         "rollout/ep_rew_mean": "episode_reward",
         "rollout/ep_len_mean": "episode_length",
-        "rollout/success_rate": "consecutive_successes",
+        "rollout/success_rate": "task_score",
         "train/actor_loss": "actor_loss",
         "train/critic_loss": "critic_loss",
+        "consecutive_successes": "task_score",
     }
 
     return name_mapping.get(metric_name, metric_name)
@@ -395,7 +396,8 @@ def append_dataframe_to_feedback(
     
     enhanced_feedback += "## TensorBoard Training Data Summary\n"
     enhanced_feedback += f"Original dataset shape: {df.shape}, Sampled: {sampled_df.shape}\n"
-    enhanced_feedback += f"Available metrics: {list(df.columns)}\n\n"
+    display_metrics = [get_display_metric_name(col) for col in df.columns]
+    enhanced_feedback += f"Available metrics: {display_metrics}\n\n"
     
     # Add key statistics from full data
     enhanced_feedback += "### Key Statistics (Full Training):\n"
@@ -403,7 +405,8 @@ def append_dataframe_to_feedback(
         if column != "step" and not df[column].isna().all():
             values = df[column].dropna()
             if len(values) > 0:
-                enhanced_feedback += f"- {column}: mean={values.mean():.3f}, std={values.std():.3f}, "
+                display_name = get_display_metric_name(column)
+                enhanced_feedback += f"- {display_name}: mean={values.mean():.3f}, std={values.std():.3f}, "
                 enhanced_feedback += f"min={values.min():.3f}, max={values.max():.3f}\n"
     
     # Add sampled data for detailed analysis
@@ -414,12 +417,16 @@ def append_dataframe_to_feedback(
     
     # Add trend information
     enhanced_feedback += "\n### Training Trends:\n"
-    for column in ["ep_rew_mean", "success_rate", "rollout/ep_rew_mean", "rollout/success_rate"]:
+    for column in ["ep_rew_mean", "success_rate", "rollout/ep_rew_mean", "rollout/success_rate", "consecutive_successes", "task_score"]:
         if column in df.columns and not df[column].isna().all():
             values = df[column].dropna()
             if len(values) > 1:
                 trend = "increasing" if values.iloc[-1] > values.iloc[0] else "decreasing"
-                enhanced_feedback += f"- {column}: {trend} trend (start: {values.iloc[0]:.3f}, end: {values.iloc[-1]:.3f})\n"
+                display_name = get_display_metric_name(column)
+                enhanced_feedback += (
+                    f"- {display_name}: {trend} trend (start: {values.iloc[0]:.3f}, "
+                    f"end: {values.iloc[-1]:.3f})\n"
+                )
     
     return enhanced_feedback
 
@@ -428,8 +435,9 @@ def extract_success_metric(logs: Dict[str, List[float]]) -> float:
     """Extract the main success metric for ranking."""
     # Priority order for success metrics
     success_keys = [
-        "consecutive_successes",
+        "task_score",
         "success_rate",
+        "consecutive_successes",
         "rollout/success_rate",
         "ep_rew_mean",
         "rollout/ep_rew_mean",

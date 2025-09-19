@@ -5,64 +5,29 @@ This module contains system and user prompts optimized for generating
 reward functions for VisFly drone environments.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 
 def create_system_prompt() -> str:
     """Create system prompt for LLM reward function generation."""
-    return """You are a reward function designer for VisFly drone environments. Generate complete get_reward methods for reinforcement learning.
-
-Environment Variables (always available):
-- self.position: torch.Tensor [N, 3] drone positions
-- self.velocity: torch.Tensor [N, 3] linear velocities  
-- self.orientation: torch.Tensor [N, 4] quaternions
-- self.angular_velocity: torch.Tensor [N, 3] angular velocities
-- self.target: torch.Tensor [N, 3] target positions
-- self.collision_dis: torch.Tensor [N] obstacle distances (use this for collision avoidance, not depth sensor)
-- self._step_count: int - current step
-- self.num_agent: int - agent count
-
-Requirements:
-1. Return complete get_reward(self) method  
-2. Use torch operations only (imported as 'torch')
-3. Function signature: def get_reward(self) -> torch.Tensor:
-4. Return shape [N] tensor matching agent count
-
-BPTT Gradient Tips (CRITICAL):
-- ALWAYS use (self.velocity - 0) to avoid in-place gradient issues
-- ALWAYS use (self.angular_velocity - 0) for gradient safety
-- This creates new tensors that preserve gradient flow
-
-COMMON FAILURE PATTERNS TO AVOID:
-- DO NOT use torch.min(tensor, dim=int) - use torch.min(tensor, dim=1) where dim is integer literal
-- DO NOT mix numpy operations - stick to pure torch operations only
-- DO NOT use .flatten() with positional dim argument - use .flatten(start_dim=1)
-- DO NOT access self.sensor_obs - use self.collision_dis for obstacle detection
-- DO NOT use torch.amin() - use torch.min() instead
-- DO NOT use operations that create numpy arrays or require numpy imports
-
-Safe Tensor Operations:
-- torch.norm(tensor, dim=1) for vector norms
-- torch.where(condition, value_true, value_false) for conditional values
-- torch.clamp(tensor, min=val, max=val) for value limiting
-- torch.exp(), torch.log(), torch.sqrt() for math operations
-- tensor.unsqueeze(1) or tensor.unsqueeze(-1) for dimension expansion
-
-Design principles:
-- All variables are torch tensors (except _step_count, num_agent)
-- Use torch operations to compute your reward logic
-- Apply coefficients and combine components as you see fit  
-- AVOID boolean indexing assignments like tensor[mask] = value (can cause shape mismatches)
-- Use torch.where() instead of conditional assignments for safety
-- CRITICAL: Do NOT mix self._step_count (scalar) directly with tensors in final reward sum
-- If using step count, convert: torch.full((self.position.size(0),), -0.01) * self._step_count
-- Do NOT use torch.tensor(scalar, device=...) in torch.where - use scalar values directly
-- Example: torch.where(condition, 1.0, 0.0), NOT torch.where(condition, torch.tensor(1.0), torch.tensor(0.0))
-
-Numerical Safety:
-- Use torch.clamp(x, min=1e-8) only for division denominators
-- Write clean, confident code without excessive checks
-- Trust the environment structure"""
+    return (
+        "You are a reward engineer creating reinforcement-learning reward functions. "
+        "Write a complete `def get_reward(self) -> torch.Tensor` implementation that helps the policy master "
+        "each VisFly task.\n\n"
+        "Authoritative guidance:\n"
+        "- Operate entirely in PyTorch; never fall back to NumPy or Python math.\n"
+        "- Return a 1-D tensor of length `self.num_agent` on `self.device`.\n"
+        "- SHAC/BPTT REQUIRE you to clone dynamics tensors: always write `(self.velocity - 0)` and `(self.angular_velocity - 0)` (and apply the same `- 0` trick to every tensor whose name contains `vel` or `ang_vel`) before using them in calculations.\n"
+        "- Avoid in-place edits, boolean indexing assignment, or constructing new tensors with mismatched devices.\n"
+        "- Use `torch.where`, `torch.clamp`, vector norms, and smooth penalties to combine reward terms.\n"
+        "- Make collision handling robust by reading `self.collision_dis` / `self.collision_vector` rather than raw sensor pixels.\n\n"
+        "Common pitfalls to avoid:\n"
+        "- Do not call Torch APIs with invalid signatures (e.g., `torch.min(tensor, dim=int)`).\n"
+        "- Do not instantiate tensors inside `torch.where` (use scalar literals).\n"
+        "- Do not mix `_step_count` scalars directly with tensors without broadcasting helpers.\n"
+        "- Do not rely on TorchScript; focus on readable, differentiable PyTorch.\n\n"
+        "Deliver confident, well-structured code that balances progress, stability, and safety signals."
+    )
 
 
 def load_environment_code(env_path: str) -> str:
@@ -123,42 +88,44 @@ def create_user_prompt(
     context_info: Dict[str, Any],
     feedback: str = "",
     env_code: str = "",
+    api_doc: Optional[str] = None,
 ) -> str:
-    """
-    Create a user prompt for a specific task and context (like real Eureka).
+    """Create the user-facing reward prompt following the Eureka structure.
 
-    Args:
-        task_description: Natural language description of the task
-        context_info: Environment-specific context information
-        feedback: Feedback from previous iterations
-        env_code: Complete environment code with reward stripped
-
-    Returns:
-        Formatted user prompt string
+    Template layout: environment stub -> optional API reference -> task briefing ->
+    structured context -> prior feedback -> final instructions.
     """
     prompt_parts = []
 
-    # Environment code (main component like real Eureka)
     if env_code:
         prompt_parts.append("The Python environment is:")
         prompt_parts.append("```python")
-        prompt_parts.append(env_code)
+        prompt_parts.append(env_code.strip())
         prompt_parts.append("```")
         prompt_parts.append("")
 
-    # Task description
-    prompt_parts.append(
-        f"Write a reward function for the following task: {task_description}"
-    )
+    if api_doc:
+        prompt_parts.append("Environment API reference (read once, no need to repeat in output):")
+        prompt_parts.append("```text")
+        prompt_parts.append(api_doc.strip())
+        prompt_parts.append("```")
+        prompt_parts.append("")
 
-    # Previous iteration feedback (if any)
+    prompt_parts.append(f"Task: {task_description}")
+
+    if context_info:
+        prompt_parts.append("\nKey environment details:")
+        for key in sorted(context_info.keys()):
+            value = context_info[key]
+            prompt_parts.append(f"- {key}: {value}")
+
     if feedback:
-        prompt_parts.append(f"\nFeedback from previous attempts:")
-        prompt_parts.append(feedback)
+        prompt_parts.append("\nFeedback from previous attempts (address every point):")
+        prompt_parts.append(feedback.strip())
 
-    # Request (simplified like real Eureka)
-    prompt_parts.append("""
-Please provide only the complete get_reward(self) method implementation.""")
+    prompt_parts.append(
+        "\nReturn only the complete `def get_reward(self) -> torch.Tensor` implementation."
+    )
 
     return "\n".join(prompt_parts)
 
