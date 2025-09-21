@@ -3,7 +3,7 @@
 
 defaults:
   - envs: hover
-  - llm: gpt-4o
+  - llm: glm-4.5
   - task: hover_task
   - api_keys
   - _self_

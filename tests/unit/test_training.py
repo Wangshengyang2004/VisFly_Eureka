@@ -7,11 +7,6 @@ import tempfile
 import torch
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
-import sys
-
-# Add project to path
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from quadro_llm.training.visfly_training_wrapper import VisFlyTrainingWrapper
 from quadro_llm.core.training_manager import TrainingManager

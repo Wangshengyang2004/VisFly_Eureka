@@ -32,6 +32,11 @@ python -m pytest tests/integration/ -v
 python -m pytest tests/ -v
 ```
 
+By default, tests marked as `slow`, `gpu`, or `llm` are skipped. Opt in with flags:
+```bash
+python -m pytest tests/ -v --run-slow --run-gpu --run-llm
+```
+
 ### Performance Benchmarks
 ```bash
 # Test default model (glm-4.5)

@@ -429,7 +429,7 @@ class EurekaVisFly:
             self.logger.debug(f"Hydra not available or not initialized: {e}")  # Fall back to current directory
 
         # Create iteration directory
-        iter_dir_name = f"iteration_{iteration}{suffix}"
+        iter_dir_name = f"iter{iteration}{suffix}"
         iter_dir = base_dir / iter_dir_name
         iter_dir.mkdir(parents=True, exist_ok=True)
 

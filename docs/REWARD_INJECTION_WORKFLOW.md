@@ -45,7 +45,7 @@ best_rewards = eureka.optimize_rewards(iterations=5, samples=15)
 ### Step 2: **Reward Function Files**
 Generated reward functions are saved as Python files:
 ```python
-# generated_rewards/iteration_1/reward_function_03.py
+# generated_rewards/iter1/reward_function_03.py
 def get_reward(self) -> th.Tensor:
     """LLM-generated reward function"""
     # Distance to target reward
@@ -85,7 +85,7 @@ python run.py \
   --env navigation \
   --algorithm bptt \
   --train 1 \
-  --reward_function_path generated_rewards/iteration_1/reward_function_03.py \
+  --reward_function_path generated_rewards/iter1/reward_function_03.py \
   --comment "eureka_iter_1_func_3"
 
 # Test trained model
@@ -146,7 +146,7 @@ python run.py --algorithm BPTT --comment experiment_1
 python run.py \
   --env navigation \
   --algorithm bptt \
-  --reward_function_path generated_rewards/iteration_2/reward_function_07.py \
+  --reward_function_path generated_rewards/iter2/reward_function_07.py \
   --comment "eureka_iter_2_func_7"
 ```
 

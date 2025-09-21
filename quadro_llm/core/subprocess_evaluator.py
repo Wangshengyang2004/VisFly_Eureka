@@ -329,7 +329,11 @@ class SubprocessRewardEvaluator:
                     final_reward=result_data['final_reward'],
                     convergence_step=result_data['convergence_step'],
                     log_dir=log_dir_path,
-                    peak_memory_mb=result_data.get('peak_memory_mb', 0.0)
+                    peak_memory_mb=result_data.get('peak_memory_mb', 0.0),
+                    evaluation_summary=result_data.get('aggregate_statistics')
+                    or result_data.get('evaluation_summary'),
+                    episode_statistics=result_data.get('episode_statistics', []),
+                    video_paths=result_data.get('video_paths', []),
                 )
             else:
                 # Include log_dir and stderr tail on failure
