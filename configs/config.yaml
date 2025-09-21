@@ -3,7 +3,7 @@
 
 defaults:
   - envs: hover
-  - llm: gpt-4o
+  - llm: glm-4.5
   - task: hover_task
   - api_keys
   - _self_
@@ -16,8 +16,8 @@ pipeline:
   
 # Optimization parameters
 optimization:
-  iterations: 1           # Number of optimization iterations
-  samples: 1            # Reward functions per iteration
+  iterations: 5           # Number of optimization iterations
+  samples: 5            # Reward functions per iteration
   algorithm: "bptt"      # Training algorithm: "bptt", "ppo", or "shac"
   evaluation_episodes: 10  # Episodes for final evaluation
 
@@ -29,7 +29,7 @@ training:
 # Execution settings
 execution:
   device: "cuda"  # "cuda" or "cpu"
-  max_workers: 4  # Maximum parallel reward evaluations
+  max_workers: 1  # Maximum parallel reward evaluations
   timeout_per_sample: 1800  # 30 minutes timeout per sample
   
 # Logging and monitoring

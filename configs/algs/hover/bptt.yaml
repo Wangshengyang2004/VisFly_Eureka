@@ -30,11 +30,11 @@ algorithm:
   train_freq: 96
   gradient_steps: 10
   actor_gradient_steps: 1
-  device: cpu
+  device: cuda
 
 # Learning parameters  
 learn:
-  total_timesteps: 5000000
+  total_timesteps: 1000000
   log_interval: 200
 
 # Test parameters

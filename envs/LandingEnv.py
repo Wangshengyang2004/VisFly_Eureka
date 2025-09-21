@@ -83,8 +83,8 @@ class LandingEnv(DroneGymEnvsBase):
         landing_half = 0.3
         # return th.full((self.num_envs,), False)
         return (self.position[:, 2] <= 0.2) \
-            & (self.position[:, :2] < (self.target[:2] + landing_half)).all(dim=1)\
-               & (self.position[:, :2] > (self.target[:2] - landing_half)).all(dim=1) \
+            & (self.position[:, :2] < (self.target[:, :2] + landing_half)).all(dim=1)\
+               & (self.position[:, :2] > (self.target[:, :2] - landing_half)).all(dim=1) \
                & ((self.velocity - 0).norm(dim=1) <= 0.3)  #
         # & \
         # ((self.position[:, :2] < self.target[:2] + landing_half).all(dim=1) & (self.position[:, :2] > self.target[:2] - landing_half).all(dim=1))

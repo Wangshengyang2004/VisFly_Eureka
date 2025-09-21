@@ -127,3 +127,26 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "slow: Slow running tests")
     config.addinivalue_line("markers", "gpu: Tests requiring GPU")
     config.addinivalue_line("markers", "llm: Tests requiring LLM API")
+
+
+def pytest_addoption(parser):
+    """Custom CLI flags to opt into slow/gpu/llm tests."""
+    parser.addoption("--run-slow", action="store_true", default=False, help="run slow tests")
+    parser.addoption("--run-gpu", action="store_true", default=False, help="run GPU tests")
+    parser.addoption("--run-llm", action="store_true", default=False, help="run LLM API tests")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip certain categories unless explicitly enabled."""
+    skip_slow = pytest.mark.skip(reason="need --run-slow option to run")
+    skip_gpu = pytest.mark.skip(reason="need --run-gpu option to run")
+    skip_llm = pytest.mark.skip(reason="need --run-llm option to run")
+
+    for item in items:
+        markers = {m.name for m in item.iter_markers()}
+        if 'slow' in markers and not config.getoption("--run-slow"):
+            item.add_marker(skip_slow)
+        if 'gpu' in markers and not config.getoption("--run-gpu"):
+            item.add_marker(skip_gpu)
+        if 'llm' in markers and not config.getoption("--run-llm"):
+            item.add_marker(skip_llm)

@@ -270,8 +270,8 @@ tensorboard --logdir outputs/2025-01-09_14-30-15/tensorboard/
 outputs/2025-01-09_14-30-15/
 ├── config.yaml                    # Complete experiment configuration
 ├── generated_rewards/             # All generated reward functions
-│   ├── iteration_0/              # Reward functions by iteration
-│   └── iteration_1/              
+│   ├── iter0/                   # Reward functions by iteration
+│   └── iter1/                   
 ├── training_outputs/             # Training results per sample
 │   ├── sample0/                 # Individual training logs
 │   └── sample1/                 

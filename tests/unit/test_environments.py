@@ -7,20 +7,14 @@ import torch
 import yaml
 from pathlib import Path
 from unittest.mock import Mock, patch
-import sys
 
-# Add project to path for imports
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / 'VisFly'))
-
-from envs.CatchEnv import CatchEnv
-from envs.DynamicEnv import DynamicEnv  
-from envs.LandingEnv import LandingEnv
-from envs.MultiNavigationEnv import MultiNavigationEnv
-from envs.RacingEnv import RacingEnv
-from envs.NavigationEnv import NavigationEnv
-from envs.HoverEnv import HoverEnv
+from VisFly.envs.CatchEnv import CatchEnv
+from VisFly.envs.DynamicEnv import DynamicEnv  
+from VisFly.envs.LandingEnv import LandingEnv
+from VisFly.envs.MultiNavigationEnv import MultiNavigationEnv
+from VisFly.envs.RacingEnv import RacingEnv
+from VisFly.envs.NavigationEnv import NavigationEnv
+from VisFly.envs.HoverEnv import HoverEnv
 
 
 class TestEnvironmentConfigs:
@@ -28,11 +22,11 @@ class TestEnvironmentConfigs:
     
     @pytest.fixture
     def config_dir(self):
-        return PROJECT_ROOT / 'configs' / 'envs'
+        return Path(__file__).parents[2] / 'configs' / 'envs'
     
     @pytest.fixture
     def alg_config_dir(self):
-        return PROJECT_ROOT / 'configs' / 'algs'
+        return Path(__file__).parents[2] / 'configs' / 'algs'
     
     def test_all_env_configs_exist(self, config_dir):
         """Test that all environment config files exist."""

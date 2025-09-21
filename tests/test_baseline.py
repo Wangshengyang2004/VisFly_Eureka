@@ -6,13 +6,12 @@ Tests if we can run basic training with the updated algorithms.
 
 import sys
 import os
+import pytest
 import yaml
 import torch as th
 from pathlib import Path
 
-# Add paths
-sys.path.append(str(Path(__file__).parent))
-sys.path.append(str(Path(__file__).parent / "VisFly"))
+pytestmark = [pytest.mark.slow]
 
 def test_config_loading():
     """Test if we can load configs"""
