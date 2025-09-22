@@ -59,7 +59,13 @@ class FlipEnv(DroneGymEnvsBase):
             max_episode_steps=max_episode_steps,
             tensor_output=tensor_output,
         )
-        
+
+        # Override observation space to include flip_progress
+        self.observation_space = spaces.Dict({
+            "state": spaces.Box(low=-np.inf, high=np.inf, shape=(13,), dtype=np.float32),
+            "flip_progress": spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32),
+        })
+
         # Initialize after parent init (so device is set)
         # Ensure we use the correct device from parent class
         actual_device = self.position.device if hasattr(self, 'position') else self.device
@@ -101,7 +107,7 @@ class FlipEnv(DroneGymEnvsBase):
         actual_device = self.state.device
         if self.accumulated_rotation.device != actual_device:
             self.accumulated_rotation = self.accumulated_rotation.to(actual_device)
-        
+
         obs = TensorDict({
             "state": self.state,
             "flip_progress": self.accumulated_rotation.clone().unsqueeze(-1) / self.flip_command,  # Normalized flip progress
@@ -156,9 +162,19 @@ class FlipEnv(DroneGymEnvsBase):
         if xz_axis.dim() == 3:
             x_axis = xz_axis[0, :, :].T  # Extract x-axis (drone's forward direction)
             z_axis = xz_axis[1, :, :].T  # Extract z-axis (drone's up direction)
+        elif xz_axis.dim() == 2 and xz_axis.shape[0] == 2:
+            # Shape is (2, N, 3) - two axes for N drones
+            x_axis = xz_axis[0]  # Extract x-axis (N, 3)
+            z_axis = xz_axis[1]  # Extract z-axis (N, 3)
+        elif xz_axis.dim() == 2:
+            # Shape is (N, 6) - concatenated axes
+            x_axis = xz_axis[:, :3]  # First 3 columns are x-axis
+            z_axis = xz_axis[:, 3:]  # Last 3 columns are z-axis
         else:
-            x_axis = xz_axis[:, 0]  # Extract x-axis from 2D tensor
-            z_axis = xz_axis[:, 1]  # Extract z-axis from 2D tensor
+            # Fallback: assume standard orientation
+            num_agents = pos.shape[0]
+            x_axis = th.tensor([[1, 0, 0]], device=pos.device).repeat(num_agents, 1)
+            z_axis = th.tensor([[0, 0, 1]], device=pos.device).repeat(num_agents, 1)
         
         # Update accumulated rotation based on angular velocity
         pitch_angular_vel = ang_vel[:, 1] # Pitch is rotation around y-axis

@@ -20,6 +20,7 @@ optimization:
   samples: 15            # Reward functions per iteration
   algorithm: "bptt"      # Training algorithm: "bptt", "ppo", or "shac"
   evaluation_episodes: 10  # Episodes for final evaluation
+  record_video: true       # Enable MP4 export during evaluation runs
 
 training:
   # Global overrides (optional)

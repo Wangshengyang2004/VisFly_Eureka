@@ -1,43 +1,41 @@
 algorithm:
   policy: SimplePolicy
   policy_kwargs:
-    features_extractor_class: FlexibleExtractor
+    features_extractor_class: StateExtractor
     features_extractor_kwargs:
       net_arch:
         state:
-          layer: [128, 64]
-        flip_progress:
-          layer: [32, 16]
+          layer: [512]
        
     critic:
       dist: mse
       n_critics: 1
       net_arch:
-        layer: [128, 64]
+        layer: [512, 512]
     actor:
       dist: normal
       net_arch:
-        layer: [128, 64]
+        layer: [512, 512]
 
     activation_fn: relu
     optimizer_class: adam
     optimizer_kwargs:
       weight_decay: 0.00001
-    
-  learning_rate: 0.001
-  horizon: 80
+
+  learning_rate: 0.005
+  horizon: 96
   tau: 0.005
   gamma: 0.99
   batch_size: 256
-  train_freq: 80
+  train_freq: 96
   gradient_steps: 10
   actor_gradient_steps: 1
-  device: cpu
+  device: cuda
 
 # Learning parameters
 learn:
-  total_timesteps: 10240
-  log_interval: 1
+  total_timesteps: 1000000
+  log_interval: 200
 
 # Test parameters
 test:

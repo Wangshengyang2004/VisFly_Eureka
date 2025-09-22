@@ -164,6 +164,7 @@ class EurekaVisFly:
                         "algorithm": self.config.algorithm,
                         "evaluation_episodes": self.config.evaluation_episodes,
                         "iteration": iteration,
+                        "record_video": self.config.record_video,
                     },
                     env_class_path=f"{self.env_class.__module__}.{self.env_class.__name__}",
                     max_concurrent=max_concurrent,

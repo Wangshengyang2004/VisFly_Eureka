@@ -29,6 +29,7 @@ class OptimizationConfig:
     evaluation_episodes: int = 10
     success_threshold: float = 0.8
     timeout_per_iteration: int = 1800  # 30 minutes per iteration
+    record_video: bool = False
 
 
 @dataclass
