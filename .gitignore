@@ -159,7 +159,6 @@ configs/llm/*_private.yaml
 *.7z
 
 # Memory dumps and core files
-core
 *.dump
 *.core
 
