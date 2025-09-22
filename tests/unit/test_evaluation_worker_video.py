@@ -82,6 +82,12 @@ class TestEvaluationWorkerVideo(unittest.TestCase):
         self.assertEqual(result.shape, (480, 640, 3), "Should maintain correct shape")
         self.assertEqual(result.dtype, np.uint8, "Should be uint8 format")
 
+        # Test RGBA frame (drop alpha to RGB)
+        test_frame_rgba = np.random.randint(0, 255, (480, 640, 4), dtype=np.uint8)
+        result_rgba = extract_rgb_frame(test_frame_rgba)
+        self.assertIsNotNone(result_rgba, "Should handle RGBA by dropping alpha")
+        self.assertEqual(result_rgba.shape, (480, 640, 3), "RGBA should be converted to RGB")
+
         print("✓ Frame extraction test passed")
 
     def test_video_recording_pipeline_simulation(self):

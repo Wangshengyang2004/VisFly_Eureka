@@ -144,7 +144,7 @@ class EurekaVisFly:
 
                 # Use max_workers from initialization
                 max_concurrent = self.max_workers
-                self.logger.info(
+                self.logger.debug(
                     f"Using {max_concurrent} parallel workers for evaluation"
                 )
 

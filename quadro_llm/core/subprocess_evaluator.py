@@ -181,10 +181,10 @@ class SubprocessRewardEvaluator:
                 if allocated_device and allocated_device.startswith("cuda:"):
                     gpu_id = allocated_device.split(":")[1]
                     subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_id
-                    self.logger.info(f"[{identifier}] Allocated GPU {gpu_id}")
+                    self.logger.debug(f"[{identifier}] Allocated GPU {gpu_id}")
                 else:
                     subprocess_env["CUDA_VISIBLE_DEVICES"] = ""
-                    self.logger.info(f"[{identifier}] Using CPU (no GPU available)")
+                    self.logger.debug(f"[{identifier}] Using CPU (no GPU available)")
             else:
                 subprocess_env["CUDA_VISIBLE_DEVICES"] = ""
                 self.logger.debug(f"[{identifier}] Algorithm configured for CPU")
@@ -224,10 +224,15 @@ class SubprocessRewardEvaluator:
                     for line in iter(pipe.readline, ''):
                         file_handle.write(line)
                         file_handle.flush()
-                        # Only log important events, not every line
+                        # Selective logging: escalate errors, keep training start/complete at DEBUG to reduce noise
                         line_stripped = line.strip()
-                        if any(keyword in line_stripped for keyword in ['SUCCESS', 'FAILED', 'ERROR', 'Training completed', 'Evaluation completed', 'Starting training']):
+                        upper = line_stripped.upper()
+                        if any(k in upper for k in ['ERROR', 'FAILED']):
+                            self.logger.error(f"[{identifier}] {line_stripped}")
+                        elif 'SUCCESS' in upper:
                             self.logger.info(f"[{identifier}] {line_stripped}")
+                        elif 'TRAINING COMPLETED' in upper or 'STARTING TRAINING' in upper or 'EVALUATION COMPLETED' in upper:
+                            self.logger.debug(f"[{identifier}] {line_stripped}")
                         
                         # Periodic heartbeat to show progress
                         current_time = time_module.time()
@@ -456,7 +461,7 @@ class SubprocessRewardEvaluator:
                 try:
                     result = future.result()
                     results_map[idx] = result
-                    self.logger.info(f"Completed evaluation {idx + 1}/{len(reward_functions)}: {identifiers[idx]}")
+                    self.logger.debug(f"Completed evaluation {idx + 1}/{len(reward_functions)}: {identifiers[idx]}")
                 except Exception as e:
                     self.logger.error(f"Failed evaluation {idx + 1}: {e}")
                     results_map[idx] = RewardFunctionResult.failed(

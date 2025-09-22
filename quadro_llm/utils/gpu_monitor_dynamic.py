@@ -174,7 +174,7 @@ class DynamicGPUResourceManager:
             training_step=0,
         )
 
-        self.logger.info(
+        self.logger.debug(
             f"Allocated GPU {best_gpu} to job {job_id} "
             f"({selected['available_memory']}MB available, {selected['utilization']}% util, "
             f"{len(self.gpu_assignments[best_gpu])} jobs)"
@@ -224,7 +224,7 @@ class DynamicGPUResourceManager:
                 profile.estimated_final_memory_mb = int(
                     profile.peak_memory_mb * MEMORY_ESTIMATION_BUFFER_FACTOR
                 )
-                self.logger.info(
+                self.logger.debug(
                     f"Job {job_id} estimated final memory: {profile.estimated_final_memory_mb}MB "
                     f"(current: {used}MB, peak: {profile.peak_memory_mb}MB)"
                 )
@@ -270,7 +270,7 @@ class DynamicGPUResourceManager:
                 device = self._try_immediate_allocation(job_id, memory_requirement_mb)
                 if device:
                     processed.append(i)
-                    self.logger.info(f"Allocated {device} to queued job {job_id}")
+                    self.logger.debug(f"Allocated {device} to queued job {job_id}")
                     # Note: Caller needs to restart the job with this device
 
             # Remove processed jobs from queue (in reverse order to maintain indices)
@@ -305,14 +305,14 @@ class DynamicGPUResourceManager:
                         tracked_peak = getattr(profile, 'peak_memory_mb', 0)
                         actual_peak = f"{tracked_peak:.0f}" if tracked_peak > 0 else "Unknown"
 
-                    self.logger.info(
+                    self.logger.debug(
                         f"Job {job_id} completed - Peak memory: {actual_peak}MB, "
                         f"Final memory estimate: {final_estimate}MB"
                     )
                     del self.job_profiles[job_id]
 
                 device_name = f"GPU {device_id}" if device_id != "cpu" else "CPU"
-                self.logger.info(f"Released {device_name} from job {job_id}")
+                self.logger.debug(f"Released {device_name} from job {job_id}")
 
                 # Process queue to assign waiting jobs
                 self.process_queue()

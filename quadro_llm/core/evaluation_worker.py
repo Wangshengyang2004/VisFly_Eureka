@@ -72,15 +72,19 @@ def _extract_rgb_frame(frame: Any) -> Optional["np.ndarray"]:
     if frame.ndim == 4:
         frame = frame[0]
 
-    if frame.ndim == 3 and frame.shape[0] in (1, 3) and frame.shape[0] != frame.shape[-1]:
+    if frame.ndim == 3 and frame.shape[0] in (1, 3, 4) and frame.shape[0] != frame.shape[-1]:
         # Channel-first -> channel-last
         frame = np.transpose(frame, (1, 2, 0))
 
     if frame.ndim == 2:
         frame = np.stack([frame] * 3, axis=-1)
 
+    # Convert grayscale or RGBA to RGB
     if frame.shape[-1] == 1:
         frame = np.repeat(frame, 3, axis=-1)
+    elif frame.shape[-1] == 4:
+        # Drop alpha channel
+        frame = frame[..., :3]
 
     frame = np.clip(frame, 0, 255)
     if frame.dtype != np.uint8:
@@ -328,11 +332,19 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         video_enabled = record_video and bool(eval_env_config.get("visual", False))
         video_fps = float(eval_env_config.get("video_fps", 30.0))
         video_dir = Path(output_dir) / "videos"
+
+        # Verbose diagnostics for video settings
+        logger.info(
+            f"[video] requested={record_video}, eval_env.visual={bool(eval_env_config.get('visual', False))}, "
+            f"enabled={video_enabled}, cv2_available={cv2 is not None}, fps={video_fps}, dir={video_dir}"
+        )
+        if record_video and not bool(eval_env_config.get("visual", False)):
+            logger.warning("[video] Disabled because eval_env.visual is False. Enable visual=true under eval_env.")
         if video_enabled:
             video_dir.mkdir(parents=True, exist_ok=True)
             if cv2 is None:
                 logger.warning(
-                    "OpenCV is unavailable; disabling video export despite visual evaluation."
+                    "[video] OpenCV (cv2) unavailable; disabling video export despite visual evaluation."
                 )
                 video_enabled = False
 
@@ -380,29 +392,66 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
                     try:
                         frame = env_eval.render()
                     except Exception as render_err:  # pragma: no cover - render depends on runtime
-                        logger.debug(f"Episode {episode_idx}: render failed ({render_err})")
+                        logger.warning(f"[video] Episode {episode_idx} step {step_count}: render() failed: {render_err}")
                         frame = None
+                    if frame is None and step_count < 3:
+                        logger.warning(f"[video] Episode {episode_idx} step {step_count}: render() returned None")
                     rgb_frame = _extract_rgb_frame(frame)
+                    if rgb_frame is None and step_count < 3:
+                        try:
+                            shape = getattr(frame, 'shape', None)
+                            ftype = type(frame).__name__ if frame is not None else None
+                        except Exception:
+                            shape, ftype = None, None
+                        logger.warning(
+                            f"[video] Episode {episode_idx} step {step_count}: could not extract RGB frame; "
+                            f"frame_type={ftype}, shape={shape}"
+                        )
                     if rgb_frame is not None and cv2 is not None:
                         if video_writer is None:
-                            height, width = rgb_frame.shape[:2]
-                            fourcc = cv2.VideoWriter_fourcc(*"avc1")  # Use avc1 for better compatibility
-                            video_path = video_dir / f"episode_{episode_idx:02d}.mp4"
-                            video_writer = cv2.VideoWriter(
-                                str(video_path), fourcc, video_fps, (width, height)
-                            )
-                            if not video_writer.isOpened():
-                                logger.warning(
-                                    f"Failed to open AVC1 video writer for {video_path}. Disabling video capture."
+                            try:
+                                height, width = rgb_frame.shape[:2]
+                                fourcc = cv2.VideoWriter_fourcc(*"avc1")  # Use avc1 for better compatibility
+                                video_path = video_dir / f"episode_{episode_idx:02d}.mp4"
+                                logger.info(
+                                    f"[video] Initializing writer: {width}x{height} @ {video_fps}fps, codec=avc1 -> {video_path}"
                                 )
-                                video_writer.release()
+                                video_writer = cv2.VideoWriter(
+                                    str(video_path), fourcc, video_fps, (width, height)
+                                )
+                            except Exception as e:
+                                logger.warning(f"[video] Failed to create VideoWriter: {e}")
                                 video_writer = None
                                 video_path = None
                                 video_enabled = False
+                        if video_writer is not None and not video_writer.isOpened():
+                            # Provide diagnostic info about OpenCV build
+                            try:
+                                import cv2 as _cv2
+                                build = getattr(_cv2, 'getBuildInformation', lambda: '')()
+                                ffmpeg_info = next((ln for ln in build.splitlines() if 'FFMPEG' in ln.upper()), None)
+                                logger.warning(
+                                    f"[video] VideoWriter failed to open for {video_path}. cv2={_cv2.__version__}. "
+                                    f"FFMPEG: {ffmpeg_info if ffmpeg_info else 'Unknown'}"
+                                )
+                            except Exception:
+                                logger.warning(
+                                    f"[video] VideoWriter failed to open for {video_path}. cv2 version check failed."
+                                )
+                            try:
+                                video_writer.release()
+                            except Exception:
+                                pass
+                            video_writer = None
+                            video_path = None
+                            video_enabled = False
                         if video_writer is not None:
-                            bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-                            video_writer.write(bgr_frame)
-                            frames_captured += 1
+                            try:
+                                bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                                video_writer.write(bgr_frame)
+                                frames_captured += 1
+                            except Exception as e:
+                                logger.warning(f"[video] Failed to write frame: {e}")
 
                 step_count += 1
 
@@ -410,6 +459,9 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
                 video_writer.release()
                 if video_path is not None:
                     saved_videos.append(str(video_path))
+                    logger.info(f"[video] Saved {video_path} with {frames_captured} frames")
+            elif video_enabled and frames_captured == 0:
+                logger.warning(f"[video] Episode {episode_idx}: no frames captured; check render() and codec support")
 
             if hasattr(env_eval, "get_success"):
                 success_tensor = env_eval.get_success()

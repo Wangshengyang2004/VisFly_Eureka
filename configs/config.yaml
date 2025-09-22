@@ -16,9 +16,9 @@ pipeline:
   
 # Optimization parameters
 optimization:
-  iterations: 10           # Number of optimization iterations
-  samples: 15            # Reward functions per iteration
-  algorithm: "bptt"      # Training algorithm: "bptt", "ppo", or "shac"
+  iterations: 1           # Number of optimization iterations
+  samples: 1           # Reward functions per iteration
+  algorithm: "shac"      # Training algorithm: "bptt", "ppo", or "shac"
   evaluation_episodes: 10  # Episodes for final evaluation
   record_video: true       # Enable MP4 export during evaluation runs
 
@@ -31,7 +31,7 @@ training:
 execution:
   device: "cuda"  # "cuda" or "cpu"
   max_workers: 8  # Maximum parallel reward evaluations
-  timeout_per_sample: 1800  # 30 minutes timeout per sample
+  timeout_per_sample: 5400  # 30 minutes timeout per sample
   
 # Logging and monitoring
 logging:
