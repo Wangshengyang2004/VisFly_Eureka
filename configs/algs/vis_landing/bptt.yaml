@@ -5,27 +5,31 @@ algorithm:
     features_extractor_kwargs:
       net_arch:
         state:
-          layer: [128, 64]
+          layer: [512]
         color:
-          layer: [256, 128]
+          kernel_size: [8, 4, 3]
+          channels: [32, 64, 64]
+          stride: [4, 2, 1]
+          padding: [0, 0, 0]
+          layer: [512]
         target:
-          layer: [32, 16]
+          layer: [128, 64]
        
     critic:
       dist: mse
       n_critics: 1
       net_arch:
-        layer: [128, 64]
+        layer: [512, 512]
     actor:
       dist: normal
       net_arch:
-        layer: [128, 64]
+        layer: [512, 512]
 
     activation_fn: relu
     optimizer_class: adam
     optimizer_kwargs:
       weight_decay: 0.00001
-
+  
   learning_rate: 0.005
   horizon: 96
   tau: 0.005
@@ -36,16 +40,15 @@ algorithm:
   actor_gradient_steps: 1
   device: cuda
 
-
-# Learning/training parameters
+# Learning parameters
 learn:
-  total_timesteps: 5000000
-  log_interval: 200
+  total_timesteps: 500000
+  log_interval: 20
 
-# Test parameters (for evaluation mode)
+# Test parameters
 test:
-  is_fig: True
-  is_fig_save: True
-  is_video: True
-  is_video_save: True
+  is_fig: true
+  is_fig_save: true
+  is_video: true 
+  is_video_save: true
   render_kwargs: {}

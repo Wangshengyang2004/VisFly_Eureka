@@ -1,17 +1,17 @@
 env:
-  num_agent_per_scene: 128
+  num_agent_per_scene: 160
   num_scene: 1
   max_episode_steps: 256
   sensor_kwargs: []
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/garage_empty"
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_empty"
   dynamics_kwargs:
     dt: 0.03
     ctrl_dt: 0.03
     action_type: "bodyrate"
     ctrl_delay: true
     cfg: "drone_d435i"
-  visual: true
+  visual: false
   requires_grad: true
   tensor_output: false
   device: "cpu"
@@ -20,9 +20,11 @@ env:
       class: "Uniform"
       kwargs:
         - position:
-            mean: [2.0, 0.0, 2.5]
-            half: [1.0, 1.0, 0.5]
-  target: [2.0, 0.0, 0.0]
+            mean: [3.5, 0.0, 1.7]
+            half: [2.0, 2.0, 0.5]
+  target: [0.0, 0.0, 1.5]
+  desired_radius: 3.0
+  desired_height: 1.5
 
 # Evaluation environment configuration
 eval_env:
@@ -31,12 +33,12 @@ eval_env:
   visual: true
   tensor_output: false
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/garage_empty"
+    path: "datasets/visfly-beta/configs/scenes/box15_wall_empty"
     render_settings:
       mode: fix
       view: custom
       resolution: [1080, 1920]
-      position: [[2.0, -5.0, 3.0], [2.0, 0.0, 0.5]]
+      position: [[9.0, 6.0, 4.0], [0.0, 0.0, 1.5]]
       line_width: 6.0
       trajectory: true
   dynamics_kwargs:
@@ -52,6 +54,8 @@ eval_env:
       class: "Uniform"
       kwargs:
         - position:
-            mean: [2.0, 0.0, 2.5]
-            half: [1.0, 1.0, 0.5]
-  target: [2.0, 0.0, 0.0]
+            mean: [3.5, 0.0, 1.7]
+            half: [2.0, 2.0, 0.5]
+  target: [0.0, 0.0, 1.5]
+  desired_radius: 3.0
+  desired_height: 1.5

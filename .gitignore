@@ -174,3 +174,4 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+ENVIRONMENT_ALGORITHM_COMPATIBILITY.md

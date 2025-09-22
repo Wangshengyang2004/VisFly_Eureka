@@ -324,7 +324,8 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         saved_videos: List[str] = []
 
         max_steps = int(eval_env_config["max_episode_steps"])
-        video_enabled = bool(eval_env_config.get("visual", False))
+        record_video = bool(optimization_config.get("record_video", False))
+        video_enabled = record_video and bool(eval_env_config.get("visual", False))
         video_fps = float(eval_env_config.get("video_fps", 30.0))
         video_dir = Path(output_dir) / "videos"
         if video_enabled:

@@ -5,21 +5,21 @@ algorithm:
     features_extractor_kwargs:
       net_arch:
         state:
-          layer: [128, 64]
+          layer: [512]
     net_arch:
-      pi: [64, 64]
-      vf: [64, 64]
+      pi: [512, 512]
+      vf: [512, 512]
     optimizer_kwargs:
       weight_decay: 0.00001
     share_features_extractor: false
-  
-  learning_rate: 0.001
-  device: cpu
+
+  learning_rate: 0.0003
+  device: cuda
   gamma: 0.99
   gae_lambda: 0.95
   n_epochs: 10
-  n_steps: 256
-  batch_size: 1024
+  n_steps: 2048
+  batch_size: 64
   ent_coef: 0.01
   vf_coef: 0.5
   max_grad_norm: 0.5
@@ -28,8 +28,8 @@ algorithm:
 
 # Learning parameters
 learn:
-  total_timesteps: 10240
-  log_interval: 1
+  total_timesteps: 1000000
+  log_interval: 10
 
 # Test parameters
 test:

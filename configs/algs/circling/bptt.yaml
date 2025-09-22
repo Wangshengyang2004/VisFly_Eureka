@@ -21,12 +21,12 @@ algorithm:
     optimizer_class: adam
     optimizer_kwargs:
       weight_decay: 0.00001
-    
+  
   learning_rate: 0.005
   horizon: 96
   tau: 0.005
   gamma: 0.99
-  batch_size: 256
+  batch_size: 25600
   train_freq: 96
   gradient_steps: 10
   actor_gradient_steps: 1
@@ -34,8 +34,8 @@ algorithm:
 
 # Learning parameters
 learn:
-  total_timesteps: 1000000
-  log_interval: 200
+  total_timesteps: 500000
+  log_interval: 20
 
 # Test parameters
 test:

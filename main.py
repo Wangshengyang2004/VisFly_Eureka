@@ -136,12 +136,14 @@ def load_llm_config(cfg: DictConfig) -> dict:
 
 def create_optimization_config(cfg: DictConfig) -> OptimizationConfig:
     """Create optimization configuration from config"""
+    record_video = bool(getattr(cfg.optimization, "record_video", False))
     return OptimizationConfig(
         iterations=cfg.optimization.iterations,
         samples=cfg.optimization.samples,
         algorithm=cfg.optimization.algorithm,
         evaluation_episodes=cfg.optimization.evaluation_episodes,
         timeout_per_iteration=cfg.execution.timeout_per_sample,
+        record_video=record_video,
     )
 
 

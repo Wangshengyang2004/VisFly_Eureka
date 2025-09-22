@@ -6,14 +6,17 @@ This script helps you find and monitor TensorBoard logs from your training runs.
 """
 
 import argparse
-import subprocess
-import sys
-from pathlib import Path
 import logging
+import re
+import subprocess
+from pathlib import Path
+
 from quadro_llm.utils.tensorboard_utils import find_tensorboard_logdir
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}")
 
 
 def find_all_tensorboard_logs(results_dir="results"):
@@ -44,8 +47,49 @@ def find_all_tensorboard_logs(results_dir="results"):
                 event_files = list(match.glob("**/events.out.tfevents.*"))
                 if event_files:
                     tensorboard_dirs.append(str(match))
-    
+
     return list(set(tensorboard_dirs))  # Remove duplicates
+
+
+def get_tensorboard_run_choices(results_dir: str = "results"):
+    """Condense TensorBoard directories down to top-level run choices."""
+    results_path = Path(results_dir)
+    if not results_path.exists():
+        return []
+
+    timestamp_runs = []
+    other_runs = []
+
+    for candidate in results_path.iterdir():
+        if not candidate.is_dir():
+            continue
+
+        logdir = find_tensorboard_logdir(str(candidate))
+        if not logdir:
+            continue
+
+        entry = (candidate.name, logdir)
+        if TIMESTAMP_PATTERN.fullmatch(candidate.name):
+            timestamp_runs.append(entry)
+        else:
+            other_runs.append(entry)
+
+    if timestamp_runs or other_runs:
+        timestamp_runs.sort(key=lambda x: x[0], reverse=True)
+        other_runs.sort(key=lambda x: x[0])
+        return timestamp_runs + other_runs
+
+    # Fallback to legacy deep search when no top-level runs are found
+    legacy_dirs = find_all_tensorboard_logs(results_dir)
+    fallback_entries = []
+    for logdir in sorted(legacy_dirs):
+        path = Path(logdir)
+        try:
+            display = str(path.relative_to(results_path))
+        except ValueError:
+            display = path.name
+        fallback_entries.append((display, str(path)))
+    return fallback_entries
 
 
 def find_latest_run_tensorboard():
@@ -53,9 +97,13 @@ def find_latest_run_tensorboard():
     results_path = Path("results")
     if not results_path.exists():
         return None
-    
+
     # Get most recent directory
-    run_dirs = [d for d in results_path.iterdir() if d.is_dir() and d.name.startswith("2025-")]
+    run_dirs = [
+        d
+        for d in results_path.iterdir()
+        if d.is_dir() and TIMESTAMP_PATTERN.fullmatch(d.name)
+    ]
     if not run_dirs:
         return None
     
@@ -92,21 +140,21 @@ def launch_tensorboard(logdir, port=6006):
 def list_available_runs():
     """List all available training runs with TensorBoard logs."""
     logger.info("Searching for TensorBoard logs...")
-    
-    tensorboard_dirs = find_all_tensorboard_logs()
-    
-    if not tensorboard_dirs:
+
+    run_choices = get_tensorboard_run_choices()
+
+    if not run_choices:
         logger.warning("No TensorBoard logs found!")
         logger.info("TensorBoard logs should be in:")
         logger.info("  - results/YYYY-MM-DD_HH-MM-SS/train/iter*/sample*/tensorboard/")
         logger.info("  - results/YYYY-MM-DD_HH-MM-SS/train/iter*/sample*/")
         return []
-    
-    logger.info(f"Found {len(tensorboard_dirs)} TensorBoard log directories:")
-    for i, logdir in enumerate(tensorboard_dirs, 1):
-        logger.info(f"  {i}. {logdir}")
-    
-    return tensorboard_dirs
+
+    logger.info(f"Found {len(run_choices)} TensorBoard runs:")
+    for i, (display, _) in enumerate(run_choices, 1):
+        logger.info(f"  {i}. {display}")
+
+    return [logdir for _, logdir in run_choices]
 
 
 def extract_training_metrics(results_dir=None):
@@ -171,22 +219,23 @@ def main():
             return
     else:
         # Interactive selection
-        tensorboard_dirs = find_all_tensorboard_logs()
-        if not tensorboard_dirs:
+        run_choices = get_tensorboard_run_choices()
+        if not run_choices:
             logger.error("No TensorBoard logs found. Use --list to see search locations.")
             return
-        elif len(tensorboard_dirs) == 1:
-            logdir = tensorboard_dirs[0]
-            logger.info(f"Using only available log directory: {logdir}")
+        elif len(run_choices) == 1:
+            display, logdir = run_choices[0]
+            logger.info(f"Using only available run: {display}")
         else:
-            logger.info("Multiple TensorBoard log directories found:")
-            for i, td in enumerate(tensorboard_dirs, 1):
-                logger.info(f"  {i}. {td}")
+            logger.info("Multiple TensorBoard runs found:")
+            for i, (display, _) in enumerate(run_choices, 1):
+                logger.info(f"  {i}. {display}")
             
             try:
                 choice = int(input("Select directory (number): ")) - 1
-                if 0 <= choice < len(tensorboard_dirs):
-                    logdir = tensorboard_dirs[choice]
+                if 0 <= choice < len(run_choices):
+                    display, logdir = run_choices[choice]
+                    logger.info(f"Selected run: {display}")
                 else:
                     logger.error("Invalid choice")
                     return

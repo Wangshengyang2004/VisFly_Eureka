@@ -20,7 +20,9 @@ def create_system_prompt() -> str:
         "- SHAC/BPTT REQUIRE you to clone dynamics tensors: always write `(self.velocity - 0)` and `(self.angular_velocity - 0)` (and apply the same `- 0` trick to every tensor whose name contains `vel` or `ang_vel`) before using them in calculations.\n"
         "- Avoid in-place edits, boolean indexing assignment, or constructing new tensors with mismatched devices.\n"
         "- Use `torch.where`, `torch.clamp`, vector norms, and smooth penalties to combine reward terms.\n"
-        "- Make collision handling robust by reading `self.collision_dis` / `self.collision_vector` rather than raw sensor pixels.\n\n"
+        "- Make collision handling robust by reading `self.collision_dis` / `self.collision_vector` rather than raw sensor pixels; `self.collision_vector` already points from the drone toward the closest surface.\n"
+        "- Use only attributes shown in the environment stub or API reference. Fields like `self.action`, `self.actions`, or ad-hoc caches are not available.\n"
+        "- Do not guard attribute access with `hasattr` or `if ... exists` checks—omit uncertain terms instead of guessing.\n\n"
         "Common pitfalls to avoid:\n"
         "- Do not call Torch APIs with invalid signatures (e.g., `torch.min(tensor, dim=int)`).\n"
         "- Do not instantiate tensors inside `torch.where` (use scalar literals).\n"
@@ -124,7 +126,8 @@ def create_user_prompt(
         prompt_parts.append(feedback.strip())
 
     prompt_parts.append(
-        "\nReturn only the complete `def get_reward(self) -> torch.Tensor` implementation."
+        "\nReturn only the complete `def get_reward(self) -> torch.Tensor` implementation. "
+        "Rely strictly on the documented attributes above—omit any term that would require guessing or `hasattr` checks."
     )
 
     return "\n".join(prompt_parts)

@@ -1,20 +1,22 @@
 algorithm:
-  policy: MultiInputPolicy
+  policy: SimplePolicy
   policy_kwargs:
-    features_extractor_class: FlexibleExtractor
+    features_extractor_class: StateExtractor
     features_extractor_kwargs:
       net_arch:
-        color:
-          layer: [128]
         state:
-          layer: [128, 64]
-        target:
-          layer: [64]
-      activation_fn: relu
-    net_arch:
-      pi: [64, 64]
-      qf: [64, 64]
+          layer: [512]
+    critic:
+      dist: mse
+      n_critics: 2
+      net_arch:
+        layer: [512, 512]
+    actor:
+      dist: normal
+      net_arch:
+        layer: [512, 512]
     activation_fn: relu
+    optimizer_class: adam
     optimizer_kwargs:
       weight_decay: 0.00001
   
