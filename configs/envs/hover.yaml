@@ -41,7 +41,7 @@ env:
 # Evaluation environment
 eval_env:
   num_agent_per_scene: 1
-  max_episode_steps: 512
+  max_episode_steps: 256
   visual: true
   tensor_output: true
   requires_grad: false
@@ -55,9 +55,10 @@ eval_env:
       mode: fix
       view: custom
       resolution: [1080, 1920]
-      position: [[15.0, 0.0, 10.0], [15.0, 0.0, 1.5]]  # Top-down view of hover area
+      position: [[15., 0.1, 30.0], [15., 0, 0]]
       line_width: 6.0
       trajectory: true
+      axes: true
       
   dynamics_kwargs:
     dt: 0.03
@@ -72,4 +73,7 @@ eval_env:
       kwargs:
         - position:
             mean: [15.0, 0.0, 1.5]
-            half: [2.0, 2.0, 0.2]
+            half: [5.0, 5.0, 0.5]
+          orientation:
+            mean: [ 0.0, 0.0, 0.0 ]
+            half: [ 0.0, 0.0, 1.57 ]
