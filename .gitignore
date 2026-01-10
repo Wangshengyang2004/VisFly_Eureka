@@ -179,4 +179,4 @@ coverage.xml
 .pytest_cache/
 ENVIRONMENT_ALGORITHM_COMPATIBILITY.md
 
-*.png
+*.pngbackup/
