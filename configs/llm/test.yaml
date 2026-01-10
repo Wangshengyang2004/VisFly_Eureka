@@ -1,0 +1,13 @@
+llm:
+  vendor: "home-octopus"
+  model: "test"
+  temperature: 1.0
+  timeout: 120
+  max_retries: 3
+  thinking:
+    enabled: true
+  batching:
+    strategy: "async"
+    supports_n_parameter: false
+    max_concurrent: 15
+

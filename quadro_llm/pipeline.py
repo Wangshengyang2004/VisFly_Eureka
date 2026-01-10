@@ -8,11 +8,16 @@ the complete reward optimization workflow for any environment.
 import time
 import logging
 import json
+import shutil
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
 from .eureka_visfly import EurekaVisFly
-from .core.models import OptimizationReport
+from .core.models import (
+    IterationSummary,
+    OptimizationReport,
+    RewardFunctionResult,
+)
 
 
 class EurekaPipeline:
@@ -64,26 +69,43 @@ class EurekaPipeline:
         """
         start_time = time.time()
 
-        try:
-            # Run iterative optimization
-            results = self.eureka.optimize_rewards()
+        # Run iterative optimization
+        results = self.eureka.optimize_rewards()
 
-            # Analyze results and create report
-            final_report = self._create_optimization_report(
-                results, time.time() - start_time
-            )
+        execution_time = time.time() - start_time
 
-            # Save outputs
-            self._save_outputs(final_report)
+        # Gather detailed results for all successful samples
+        successful_reward_results = self._gather_successful_reward_results()
 
-            self.logger.info(
-                f"Optimization completed in {final_report.execution_time:.1f}s"
-            )
+        # Identify the best-performing reward across all successes
+        best_reward_result = self._select_best_reward_result(
+            successful_reward_results
+        )
 
-            return final_report
+        # Analyze results and create report
+        final_report = self._create_optimization_report(
+            results, execution_time
+        )
 
-        finally:
-            pass
+        # Create best_sample symlink pointing directly to train folder
+        if best_reward_result:
+            best_artifact_root = self._derive_artifact_root(best_reward_result)
+            if best_artifact_root and best_artifact_root.exists():
+                alias_path = self._ensure_best_alias(best_artifact_root)
+                final_report.best_artifacts_dir = str(alias_path)
+                self.logger.info(
+                    "Best sample artifacts available at: %s",
+                    alias_path,
+                )
+
+        # Save outputs
+        self._save_outputs(final_report)
+
+        self.logger.info(
+            f"Optimization completed in {final_report.execution_time:.1f}s"
+        )
+
+        return final_report
 
     def _create_optimization_report(
         self, results: List, execution_time: float
@@ -109,40 +131,44 @@ class EurekaPipeline:
 
         # Create iteration history from eureka optimization history
         iteration_history = []
-        for i, iter_results in enumerate(self.eureka.optimization_history):
-            if iter_results:
-                best_in_iter = max(iter_results, key=lambda x: x.success_rate)
-                best_idx = iter_results.index(best_in_iter)
-                
-                # Convert TrainingResult to RewardFunctionResult for IterationSummary
-                from .core.models import RewardFunctionResult, IterationSummary
-                reward_results = []
-                for result in iter_results:
-                    reward_result = RewardFunctionResult(
-                        reward_code=result.reward_code,
-                        identifier=result.identifier,
-                        training_successful=True,  # Only successful results are in the history
-                        success_rate=result.success_rate,
-                        episode_length=result.episode_length,
-                        training_time=result.training_time,
-                        final_reward=result.final_reward,
-                        convergence_step=result.convergence_step,
-                        error_message="",
-                        log_dir=getattr(result, 'log_dir', None)
-                    )
-                    reward_results.append(reward_result)
-                
-                iteration_summary = IterationSummary(
-                    iteration=i + 1,
+        for iteration_index, iter_results in enumerate(
+            self.eureka.optimization_history, start=1
+        ):
+            if not iter_results:
+                continue
+
+            reward_results = [
+                RewardFunctionResult(
+                    reward_code=result.reward_code,
+                    identifier=result.identifier,
+                    training_successful=True,
+                    success_rate=result.success_rate,
+                    episode_length=result.episode_length,
+                    training_time=result.training_time,
+                    final_reward=result.final_reward,
+                    convergence_step=result.convergence_step,
+                    error_message="",
+                    log_dir=getattr(result, "log_dir", None),
+                )
+                for result in iter_results
+            ]
+
+            best_idx, best_result = max(
+                enumerate(reward_results), key=lambda item: item[1].success_rate
+            )
+
+            iteration_history.append(
+                IterationSummary(
+                    iteration=iteration_index,
                     samples=reward_results,
                     best_sample_idx=best_idx,
-                    best_success_rate=best_in_iter.success_rate,
-                    best_correlation=0.0,  # Not implemented
-                    execution_rate=len(iter_results) / max(1, len(iter_results)),  # All successful
-                    generation_time=0.0,  # Not tracked currently
-                    total_training_time=sum(r.training_time for r in iter_results)
+                    best_success_rate=best_result.success_rate,
+                    best_correlation=0.0,
+                    execution_rate=1.0,
+                    generation_time=0.0,
+                    total_training_time=sum(r.training_time for r in iter_results),
                 )
-                iteration_history.append(iteration_summary)
+            )
 
         return OptimizationReport(
             total_samples=total_samples,
@@ -173,6 +199,76 @@ class EurekaPipeline:
 
         self.logger.info(f"Results saved to {self.output_dir}")
 
+    def _gather_successful_reward_results(self) -> List[RewardFunctionResult]:
+        """Collect all successful reward function evaluations with artifacts."""
+
+        successful_results: List[RewardFunctionResult] = []
+
+        for iteration_results in getattr(self.eureka, "complete_iteration_results", []):
+            for result in iteration_results:
+                if getattr(result, "training_successful", False):
+                    successful_results.append(result)
+
+        return successful_results
+
+    def _select_best_reward_result(
+        self, results: List[RewardFunctionResult]
+    ) -> Optional[RewardFunctionResult]:
+        """Return the highest-scoring reward function result from the provided list."""
+
+        best_result: Optional[RewardFunctionResult] = None
+
+        for result in results:
+            if best_result is None:
+                best_result = result
+                continue
+
+            if result.success_rate > best_result.success_rate:
+                best_result = result
+                continue
+
+            if (
+                result.success_rate == best_result.success_rate
+                and result.episode_length > best_result.episode_length
+            ):
+                best_result = result
+
+        return best_result
+
+
+    def _ensure_best_alias(self, target_path: Path) -> Path:
+        """Expose a stable best_sample directory pointing to target_path."""
+
+        alias_path = self.output_dir / "best_sample"
+
+        if alias_path.exists() or alias_path.is_symlink():
+            if alias_path.is_symlink() or alias_path.is_file():
+                alias_path.unlink()
+            else:
+                shutil.rmtree(alias_path)
+
+        try:
+            alias_path.symlink_to(target_path, target_is_directory=True)
+        except Exception:
+            shutil.copytree(target_path, alias_path, dirs_exist_ok=True)
+
+        return alias_path
+
+    def _derive_artifact_root(
+        self, result: RewardFunctionResult
+    ) -> Optional[Path]:
+        """Best-effort deduction of the evaluation artifact directory."""
+
+        if result.video_paths:
+            first_video = Path(result.video_paths[0])
+            return first_video.parent.parent  # .../sampleX/videos -> sampleX
+
+        if result.log_dir:
+            log_path = Path(result.log_dir)
+            return log_path.parent
+
+        return None
+
 
 def run_production_pipeline():
     """Run the complete production pipeline with default configuration
@@ -184,6 +280,10 @@ def run_production_pipeline():
         "Standalone pipeline execution not supported. "
         "Please use main.py with Hydra configuration."
     )
+
+
+# Backwards compatible alias for older tests/imports.
+Pipeline = EurekaPipeline
 
 
 if __name__ == "__main__":

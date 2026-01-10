@@ -13,7 +13,7 @@ import json
 from collections import Counter
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 # Note: LLM configuration comes from config files, not constants
 from ..core.exceptions import (
@@ -27,8 +27,16 @@ from .prompts import (
     create_system_prompt,
     create_user_prompt,
     extract_env_code_without_reward,
+    extract_human_reward,
+    create_coefficient_tuning_system_prompt,
+    create_coefficient_tuning_prompt,
 )
 from ..utils.reward_injection import extract_reward_function
+from ..utils.coefficient_tuner import (
+    parse_coefficients_from_llm_output,
+    generate_reward_from_coefficients,
+    get_default_coefficients,
+)
 
 
 class LLMEngine:
@@ -39,37 +47,45 @@ class LLMEngine:
     for generating VisFly-compatible reward functions.
     """
 
+    # Retry and timing constants
+    RETRY_BACKOFF_BASE = 2  # Base for exponential backoff (2^attempt)
+    BATCH_PAUSE_SECONDS = 1.0  # Pause between batch requests
+    SAMPLE_PAUSE_SECONDS = 0.5  # Pause between sequential samples
+
     def __init__(
         self,
         model: str,
         api_key: str,
         base_url: str,
         temperature: float,
-        max_tokens: int,
         timeout: int,
         max_retries: int,
+        max_tokens: Optional[int] = None,
         thinking_enabled: bool = True,
         batching_strategy: str = "n_parameter",
         supports_n_parameter: bool = True,
         max_concurrent: int = 10,
         include_api_doc: bool = False,
         api_doc_path: Optional[str] = None,
+        include_human_reward: bool = False,
+        history_window_size: int = 2,
     ):
         """
         Initialize the LLM engine.
 
         Args:
-            model: Model name (e.g., "gpt-4", "gpt-3.5-turbo", "glm-4.5")
+            model: Model name (e.g., "gpt-4", "gpt-3.5-turbo", "glm-4.6")
             api_key: API key (if None, will try to get from environment)
             base_url: Base URL for API calls (for custom endpoints)
             temperature: Sampling temperature for generation
-            max_tokens: Maximum tokens in response
+            max_tokens: Maximum tokens in response (None for unlimited)
             timeout: Request timeout in seconds
             max_retries: Maximum number of retries for failed requests
-            thinking_enabled: Whether to enable thinking chain for supported models (GLM-4.5+)
+            thinking_enabled: Whether to enable thinking chain for supported models (GLM-4.6+)
             batching_strategy: Strategy for batching multiple requests ("n_parameter", "sequential", "async", "multiprocessing")
             supports_n_parameter: Whether the API supports the n parameter for multiple completions
             max_concurrent: Maximum concurrent requests for async/multiprocessing strategies
+            history_window_size: Number of recent iterations to include in context (-1=all, 0=Eureka-style, 1=LaRes-style, 2+=balanced)
         """
         self.model = model
         self.temperature = temperature
@@ -82,6 +98,8 @@ class LLMEngine:
         self.max_concurrent = max_concurrent
         self.include_api_doc = include_api_doc
         self.api_doc_path = api_doc_path
+        self.include_human_reward = include_human_reward
+        self.history_window_size = history_window_size
 
         self.logger = logging.getLogger(__name__)
 
@@ -92,9 +110,18 @@ class LLMEngine:
             client_kwargs["base_url"] = base_url
 
         self.client = OpenAI(**client_kwargs)
-        self.logger.info(f"Initialized LLM engine with model: {model}")
-        
-        # Initialize conversation logging
+        # Store client kwargs for lazy initialization of async client
+        self._client_kwargs = client_kwargs
+        self._async_client = None
+        self.logger.info(
+            f"Initialized LLM engine with model: {model}, "
+            f"history_window_size: {history_window_size}"
+        )
+
+        # Initialize conversation history (for multi-turn dialogue with LLM)
+        self.conversation_history: List[Dict[str, str]] = []
+
+        # Initialize conversation logging (for saving to disk)
         self.conversations: List[Dict[str, Any]] = []
 
         # Preload optional API reference text for prompt augmentation
@@ -114,7 +141,7 @@ class LLMEngine:
                 candidate = Path(self.api_doc_path)
                 doc_path = candidate if candidate.is_absolute() else base_path / candidate
             else:
-                doc_path = base_path / "api-doc.txt"
+                doc_path = base_path / "quadro_llm" / "llm" / "prompts" / "api-doc.txt"
 
             if not doc_path.exists():
                 self.logger.warning(
@@ -128,6 +155,46 @@ class LLMEngine:
             self.logger.warning("Failed to load API reference: %s", exc)
             return None
 
+    def _build_request_params(
+        self,
+        messages: List[Dict],
+        n_samples: Optional[int] = None,
+        max_tokens_override: Optional[int] = None,
+        timeout_override: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Build API request parameters with common configuration.
+
+        Args:
+            messages: Chat messages for the API
+            n_samples: Number of samples to generate (optional)
+            max_tokens_override: Override max_tokens (optional)
+            timeout_override: Override timeout (optional)
+
+        Returns:
+            Dictionary of request parameters
+        """
+        request_params = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "timeout": timeout_override if timeout_override is not None else self.timeout,
+        }
+
+        # Add optional parameters
+        if n_samples is not None:
+            request_params["n"] = n_samples
+
+        max_tokens = max_tokens_override if max_tokens_override is not None else self.max_tokens
+        if max_tokens is not None:
+            request_params["max_tokens"] = max_tokens
+
+        # Disable thinking for models that support it
+        if not self.thinking_enabled:
+            request_params["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        return request_params
+
     def generate_reward_functions(
         self,
         task_description: str,
@@ -135,6 +202,7 @@ class LLMEngine:
         feedback: str = "",
         samples: int = 16,
         env_class=None,
+        previous_elite_reward: Optional[str] = None,
     ) -> List[str]:
         """
         Generate multiple reward function candidates for a given task.
@@ -160,25 +228,73 @@ class LLMEngine:
         # Extract environment code without reward (like real Eureka)
         env_code = extract_env_code_without_reward(env_class)
 
+        # Extract human reward if enabled
+        human_reward_code = None
+        if self.include_human_reward:
+            human_reward_code = extract_human_reward(env_class)
+            if human_reward_code:
+                self.logger.debug("Extracted human reward function for inclusion in prompt")
+            else:
+                self.logger.debug("Human reward extraction requested but failed (method may not exist)")
+
         # Create prompts
         system_prompt = create_system_prompt()
+        
+        # Check if static info exists in conversation history
+        # Static info (env_code, api_doc, task_description, context_info) should be preserved
+        # We need to check if any history message contains these static elements
+        has_static_info_in_history = False
+        if self.conversation_history:
+            # Check if any user message in history contains env code or task description
+            for msg in self.conversation_history:
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    # Check for static info markers
+                    if "The Python environment is:" in content or "Task:" in content:
+                        has_static_info_in_history = True
+                        break
+        
+        # Only include static info if:
+        # 1. No history exists (first iteration)
+        # 2. history_window_size is 0 (Eureka-style, no history)
+        # 3. Static info is not in current history window (was pruned)
+        include_static_info = (
+            len(self.conversation_history) == 0 
+            or self.history_window_size == 0
+            or not has_static_info_in_history
+        )
+        
         user_prompt = create_user_prompt(
             task_description,
             context_info,
             feedback,
             env_code,
             api_doc=self.api_doc_content if self.api_doc_content else None,
+            human_reward_code=human_reward_code,
+            elite_reward_code=previous_elite_reward,
+            include_static_info=include_static_info,
         )
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
+        # Build messages with conversation history pruning
+        messages = self._build_messages_with_history(
+            system_prompt, user_prompt
+        )
 
         usage_before = self._usage_snapshot()
 
         # Use appropriate batching strategy based on configuration
-        if self.batching_strategy == "n_parameter" and self.supports_n_parameter:
+        if self.batching_strategy == "adaptive":
+            # Adaptive strategy: intelligently choose the best available strategy
+            if self.supports_n_parameter:
+                self.logger.debug("Adaptive strategy: using n_parameter (most efficient)")
+                results = self._generate_with_n_parameter(messages, samples)
+            elif self.max_concurrent > 1:
+                self.logger.debug("Adaptive strategy: using async (parallel requests)")
+                results = self._generate_async(messages, samples)
+            else:
+                self.logger.debug("Adaptive strategy: using sequential (fallback)")
+                results = self._generate_sequential(messages, samples)
+        elif self.batching_strategy == "n_parameter" and self.supports_n_parameter:
             results = self._generate_with_n_parameter(messages, samples)
         elif self.batching_strategy == "sequential":
             results = self._generate_sequential(messages, samples)
@@ -193,6 +309,9 @@ class LLMEngine:
 
         usage_delta = self._usage_delta(usage_before)
 
+        # Note: Conversation history is updated with elite reward function after elite voter selection
+        # in EurekaVisFly.optimize_rewards(), not here. This ensures only elite functions are in history.
+
         # Log the conversation
         self._log_conversation(
             messages,
@@ -205,10 +324,214 @@ class LLMEngine:
 
         return results
 
+    def generate_coefficients(
+        self,
+        task_description: str,
+        feedback: str = "",
+        samples: int = 16,
+        current_coefficients: Optional[Dict[str, float]] = None,
+    ) -> List[str]:
+        """
+        Generate reward function code by tuning coefficients only.
+        
+        Args:
+            task_description: Natural language description of the task
+            feedback: Feedback from previous iterations
+            samples: Number of coefficient sets to generate
+            current_coefficients: Current coefficient values for reference
+            
+        Returns:
+            List of complete reward function code strings (generated from coefficients)
+        """
+        # Create prompts for coefficient tuning
+        system_prompt = create_coefficient_tuning_system_prompt()
+        user_prompt = create_coefficient_tuning_prompt(
+            task_description,
+            feedback,
+            current_coefficients,
+        )
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        
+        usage_before = self._usage_snapshot()
+        
+        # Generate coefficient sets using the same batching strategy
+        coefficient_texts = []
+        if self.batching_strategy == "adaptive":
+            if self.supports_n_parameter:
+                coefficient_texts = self._generate_coefficient_texts_with_n(messages, samples)
+            elif self.max_concurrent > 1:
+                coefficient_texts = self._generate_coefficient_texts_async(messages, samples)
+            else:
+                coefficient_texts = self._generate_coefficient_texts_sequential(messages, samples)
+        elif self.batching_strategy == "n_parameter" and self.supports_n_parameter:
+            coefficient_texts = self._generate_coefficient_texts_with_n(messages, samples)
+        elif self.batching_strategy == "sequential":
+            coefficient_texts = self._generate_coefficient_texts_sequential(messages, samples)
+        elif self.batching_strategy == "async":
+            coefficient_texts = self._generate_coefficient_texts_async(messages, samples)
+        else:
+            coefficient_texts = self._generate_coefficient_texts_sequential(messages, samples)
+        
+        usage_delta = self._usage_delta(usage_before)
+        
+        # Parse coefficients and generate reward functions
+        reward_functions = []
+        for coeff_text in coefficient_texts:
+            coefficients = parse_coefficients_from_llm_output(coeff_text)
+            if coefficients:
+                reward_code = generate_reward_from_coefficients(coefficients)
+                reward_functions.append(reward_code)
+            else:
+                # Fallback to default if parsing fails
+                self.logger.warning("Failed to parse coefficients, using defaults")
+                reward_code = generate_reward_from_coefficients(get_default_coefficients())
+                reward_functions.append(reward_code)
+        
+        # Log conversation
+        self._log_conversation(
+            messages,
+            coefficient_texts,
+            task_description,
+            feedback,
+            samples,
+            token_usage=usage_delta,
+        )
+        
+        return reward_functions
+    
+    def _generate_coefficient_texts_with_n(self, messages: List[Dict], samples: int) -> List[str]:
+        """Generate coefficient texts using n parameter."""
+        texts = []
+        batch_size = min(samples, 8)
+        remaining = samples
+        
+        while remaining > 0:
+            current_batch = min(remaining, batch_size)
+            batch_texts = self._generate_single_batch_coefficients(messages, current_batch)
+            texts.extend(batch_texts)
+            remaining -= len(batch_texts)
+            
+            if remaining > 0:
+                time.sleep(self.BATCH_PAUSE_SECONDS)
+        
+        return texts
+    
+    def _generate_single_batch_coefficients(self, messages: List[Dict], n_samples: int) -> List[str]:
+        """Generate a single batch of coefficient texts."""
+        for attempt in range(self.max_retries):
+            try:
+                request_params = self._build_request_params(messages, n_samples=n_samples)
+
+                response = self.client.chat.completions.create(**request_params)
+                
+                self._record_usage(
+                    getattr(response, "usage", None),
+                    meta={"strategy": "n_parameter_coefficients", "requested": n_samples},
+                )
+                
+                texts = []
+                for choice in response.choices:
+                    content = choice.message.content.strip()
+                    if content:
+                        texts.append(content)
+                
+                return texts
+                
+            except Exception as e:
+                self.logger.warning(f"API call attempt {attempt + 1} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.RETRY_BACKOFF_BASE ** attempt)
+                else:
+                    self.logger.error(f"All {self.max_retries} attempts failed")
+                    raise
+        
+        return []
+    
+    def _generate_coefficient_texts_sequential(self, messages: List[Dict], samples: int) -> List[str]:
+        """Generate coefficient texts sequentially."""
+        texts = []
+        
+        for i in range(samples):
+            self.logger.debug(f"Generating coefficient set {i+1}/{samples}")
+            
+            for attempt in range(self.max_retries):
+                try:
+                    request_params = self._build_request_params(messages)
+
+                    response = self.client.chat.completions.create(**request_params)
+                    
+                    self._record_usage(
+                        getattr(response, "usage", None),
+                        meta={"strategy": "sequential_coefficients", "sample": i+1},
+                    )
+                    
+                    content = response.choices[0].message.content.strip()
+                    if content:
+                        texts.append(content)
+                        break
+                    
+                except Exception as e:
+                    self.logger.warning(f"API call attempt {attempt + 1} failed: {e}")
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.RETRY_BACKOFF_BASE ** attempt)
+                    else:
+                        self.logger.error(f"Failed to generate coefficient set {i+1}")
+        
+        return texts
+    
+    def _generate_coefficient_texts_async(self, messages: List[Dict], samples: int) -> List[str]:
+        """Generate coefficient texts asynchronously."""
+        import asyncio
+        
+        async def generate_single_coeff_async(session_id: int) -> Optional[str]:
+            try:
+                request_params = self._build_request_params(messages)
+                
+                # Use async client for true concurrent HTTP requests
+                response = await self.async_client.chat.completions.create(**request_params)
+                
+                self._record_usage(
+                    getattr(response, "usage", None),
+                    meta={"strategy": "async", "session_id": session_id, "type": "coefficient"},
+                )
+                
+                if response.choices:
+                    content = response.choices[0].message.content
+                    return content.strip()
+                    
+            except Exception as e:
+                self.logger.warning(f"Async coefficient sample {session_id} failed: {e}")
+            
+            return None
+        
+        async def run_async_batch():
+            semaphore = asyncio.Semaphore(self.max_concurrent)
+            
+            async def bounded_generate(session_id):
+                async with semaphore:
+                    return await generate_single_coeff_async(session_id)
+            
+            tasks = [bounded_generate(i) for i in range(samples)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            return [r for r in results if isinstance(r, str) and r]
+        
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(run_async_batch())
+
     def _generate_with_n_parameter(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate multiple samples using API's n parameter (OpenAI style)."""
         reward_functions = []
-        batch_size = min(samples, 10)  # OpenAI allows max 10 choices per request
+        batch_size = min(samples, 8)
         remaining = samples
 
         while remaining > 0:
@@ -218,9 +541,85 @@ class LLMEngine:
             remaining -= len(batch_functions)
 
             if remaining > 0:
-                time.sleep(1)  # Brief pause between batches
+                time.sleep(self.BATCH_PAUSE_SECONDS)  # Brief pause between batches
 
         return reward_functions
+
+    def _build_messages_with_history(
+        self, system_prompt: str, user_prompt: str
+    ) -> List[Dict[str, str]]:
+        """
+        Build messages list with conversation history pruning.
+
+        Implements different pruning strategies based on history_window_size:
+        - -1: Keep all history (no pruning)
+        - 0: Eureka-style - only system + current user (no history)
+        - 1: LaRes-style - keep last turn only
+        - 2+: Keep last N turns (balanced approach)
+
+        Args:
+            system_prompt: System prompt for the LLM
+            user_prompt: Current user prompt
+
+        Returns:
+            List of message dictionaries for the LLM API
+        """
+        messages = [{"role": "system", "content": system_prompt}]
+
+        if self.history_window_size == 0:
+            # Eureka-style: aggressive pruning, no history
+            self.logger.debug("Using Eureka-style history pruning (window_size=0)")
+            messages.append({"role": "user", "content": user_prompt})
+
+        elif self.history_window_size == -1:
+            # No pruning: include all history
+            self.logger.debug(f"Including all conversation history ({len(self.conversation_history)} turns)")
+            messages.extend(self.conversation_history)
+            messages.append({"role": "user", "content": user_prompt})
+
+        else:
+            # Sliding window: keep last N turns
+            history_to_include = self.conversation_history[-self.history_window_size * 2:]
+            self.logger.debug(
+                f"Including last {len(history_to_include) // 2} of {len(self.conversation_history) // 2} turns "
+                f"(window_size={self.history_window_size})"
+            )
+            messages.extend(history_to_include)
+            messages.append({"role": "user", "content": user_prompt})
+
+        return messages
+
+    def _update_conversation_history(
+        self, assistant_response: str, user_prompt: str
+    ) -> None:
+        """
+        Update conversation history with the latest assistant response.
+
+        Adds the user prompt and assistant response as a pair to conversation history.
+        Applies pruning based on history_window_size.
+
+        Args:
+            assistant_response: The assistant's response (reward function code)
+            user_prompt: The user prompt that generated this response
+        """
+        # Add both user and assistant messages as a pair
+        self.conversation_history.append(
+            {"role": "user", "content": user_prompt}
+        )
+        self.conversation_history.append(
+            {"role": "assistant", "content": assistant_response}
+        )
+
+        # Prune history if needed (keep last window_size turns)
+        if self.history_window_size > 0:
+            max_messages = self.history_window_size * 2  # 2 messages per turn
+            if len(self.conversation_history) > max_messages:
+                removed = len(self.conversation_history) - max_messages
+                self.conversation_history = self.conversation_history[-max_messages:]
+                self.logger.debug(
+                    f"Pruned {removed} old messages from conversation history "
+                    f"(kept last {self.history_window_size} turns)"
+                )
 
     def _usage_snapshot(self) -> Dict[str, int]:
         return dict(self._token_usage)
@@ -290,20 +689,8 @@ class LLMEngine:
         """
         for attempt in range(self.max_retries):
             try:
-                # Prepare request parameters
-                request_params = {
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": self.temperature,
-                    "max_tokens": self.max_tokens,
-                    "n": n_samples,
-                    "timeout": self.timeout,
-                }
-                
-                # Add thinking configuration based on config setting
-                if hasattr(self, 'thinking_enabled') and not self.thinking_enabled:
-                    request_params["extra_body"] = {"thinking": {"type": "disabled"}}
-                
+                request_params = self._build_request_params(messages, n_samples=n_samples)
+
                 response = self.client.chat.completions.create(**request_params)
 
                 self._record_usage(
@@ -329,7 +716,7 @@ class LLMEngine:
             except Exception as e:
                 self.logger.warning(f"API call attempt {attempt + 1} failed: {e}")
                 if attempt < self.max_retries - 1:
-                    time.sleep(2**attempt)  # Exponential backoff
+                    time.sleep(self.RETRY_BACKOFF_BASE ** attempt)  # Exponential backoff
                 else:
                     self.logger.error(f"All {self.max_retries} attempts failed")
                     raise
@@ -345,18 +732,8 @@ class LLMEngine:
             
             for attempt in range(self.max_retries):
                 try:
-                    request_params = {
-                        "model": self.model,
-                        "messages": messages,
-                        "temperature": self.temperature,
-                        "max_tokens": self.max_tokens,
-                        "timeout": self.timeout,
-                    }
-                    
-                    # Add thinking configuration based on config setting
-                    if hasattr(self, 'thinking_enabled') and not self.thinking_enabled:
-                        request_params["extra_body"] = {"thinking": {"type": "disabled"}}
-                    
+                    request_params = self._build_request_params(messages)
+
                     response = self.client.chat.completions.create(**request_params)
 
                     self._record_usage(
@@ -378,35 +755,33 @@ class LLMEngine:
                 except Exception as e:
                     self.logger.warning(f"Sample {i+1} attempt {attempt + 1} failed: {e}")
                     if attempt < self.max_retries - 1:
-                        time.sleep(2**attempt)  # Exponential backoff
+                        time.sleep(self.RETRY_BACKOFF_BASE ** attempt)  # Exponential backoff
                     else:
                         self.logger.error(f"Sample {i+1} failed after all retries")
             
             # Brief pause between samples to respect rate limits
             if i < samples - 1:
-                time.sleep(0.5)
+                time.sleep(self.SAMPLE_PAUSE_SECONDS)
         
         return reward_functions
 
+    @property
+    def async_client(self) -> AsyncOpenAI:
+        """Lazy initialization of async client."""
+        if self._async_client is None:
+            self._async_client = AsyncOpenAI(**self._client_kwargs)
+        return self._async_client
+    
     def _generate_async(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate samples asynchronously."""
         import asyncio
         
         async def generate_single_async(session_id: int) -> Optional[str]:
             try:
-                request_params = {
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": self.temperature,
-                    "max_tokens": self.max_tokens,
-                    "timeout": self.timeout,
-                }
-                
-                # Add thinking configuration based on config setting
-                if hasattr(self, 'thinking_enabled') and not self.thinking_enabled:
-                    request_params["extra_body"] = {"thinking": {"type": "disabled"}}
-                
-                response = self.client.chat.completions.create(**request_params)
+                request_params = self._build_request_params(messages)
+
+                # Use async client for true concurrent HTTP requests
+                response = await self.async_client.chat.completions.create(**request_params)
 
                 self._record_usage(
                     getattr(response, "usage", None),
@@ -454,18 +829,8 @@ class LLMEngine:
                 
                 # Note: This is simplified - in practice you'd need to properly recreate the client
                 # with the same configuration in each process
-                request_params = {
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": self.temperature,
-                    "max_tokens": self.max_tokens,
-                    "timeout": self.timeout,
-                }
-                
-                # Add thinking configuration based on config setting
-                if hasattr(self, 'thinking_enabled') and not self.thinking_enabled:
-                    request_params["extra_body"] = {"thinking": {"type": "disabled"}}
-                
+                request_params = self._build_request_params(messages)
+
                 response = self.client.chat.completions.create(**request_params)
 
                 self._record_usage(
@@ -521,18 +886,12 @@ class LLMEngine:
         Test the API connection with a simple request.
         Raises exception if connection fails.
         """
-        # Prepare request parameters
-        request_params = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 10,
-            "timeout": 30,  # API timeout - should come from config
-        }
-        
-        # Add thinking configuration based on config setting
-        if hasattr(self, 'thinking_enabled') and not self.thinking_enabled:
-            request_params["extra_body"] = {"thinking": {"type": "disabled"}}
-        
+        request_params = self._build_request_params(
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens_override=10,
+            timeout_override=30,
+        )
+
         response = self.client.chat.completions.create(**request_params)
 
         self._record_usage(getattr(response, "usage", None), meta={"strategy": "healthcheck"})
@@ -551,7 +910,7 @@ class LLMEngine:
         """
         try:
             # Check for basic structure
-            if "def get_reward(self)" not in reward_code:
+            if "def get_reward(self" not in reward_code:
                 self.logger.error("Reward function missing proper signature")
                 return False
 

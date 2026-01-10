@@ -28,8 +28,14 @@ class OptimizationConfig:
     algorithm: str = "bptt"  # "bptt", "ppo", or "shac"
     evaluation_episodes: int = 10
     success_threshold: float = 0.8
-    timeout_per_iteration: int = 1800  # 30 minutes per iteration
     record_video: bool = False
+    gpu_memory_requirement_mb: int = 2048
+    # History pruning: number of recent iterations to keep in LLM context
+    # -1 = keep all history (no pruning)
+    # 0 = Eureka-style: only keep current iteration (aggressive pruning)
+    # 1 = keep last iteration (similar to LaRes)
+    # 2+ = keep last N iterations (balanced approach)
+    history_window_size: int = 2
 
 
 @dataclass
@@ -106,6 +112,7 @@ class OptimizationReport:
     iteration_history: List[IterationSummary]
     best_reward_code: Optional[str] = None
     baseline_performance: Optional[Dict[str, float]] = None
+    best_artifacts_dir: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert report to dictionary for serialization."""
@@ -128,4 +135,5 @@ class OptimizationReport:
             ],
             'best_reward_code': self.best_reward_code,
             'baseline_performance': self.baseline_performance,
+            'best_artifacts_dir': self.best_artifacts_dir,
         }

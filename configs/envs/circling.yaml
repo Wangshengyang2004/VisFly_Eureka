@@ -4,7 +4,7 @@ env:
   max_episode_steps: 256
   sensor_kwargs: []
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_empty"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty"
   dynamics_kwargs:
     dt: 0.03
     ctrl_dt: 0.03
@@ -13,8 +13,8 @@ env:
     cfg: "drone_d435i"
   visual: false
   requires_grad: true
-  tensor_output: false
-  device: "cpu"
+  tensor_output: true
+  device: "cuda"
   random_kwargs:
     state_generator:
       class: "Uniform"
@@ -22,9 +22,15 @@ env:
         - position:
             mean: [3.5, 0.0, 1.7]
             half: [2.0, 2.0, 0.5]
+  # Circle motion parameters
   target: [0.0, 0.0, 1.5]
   desired_radius: 3.0
   desired_height: 1.5
+  angular_speed: 1.0  # rad/s
+  radius_tolerance: 0.6  # ±30%
+  height_tolerance: 0.3  # ±30cm
+  debug: false
+  debug_interval: 50
 
 # Evaluation environment configuration
 eval_env:
@@ -33,7 +39,7 @@ eval_env:
   visual: true
   tensor_output: false
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_empty"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty"
     render_settings:
       mode: fix
       view: custom
@@ -56,6 +62,12 @@ eval_env:
         - position:
             mean: [3.5, 0.0, 1.7]
             half: [2.0, 2.0, 0.5]
+  # Circle motion parameters
   target: [0.0, 0.0, 1.5]
   desired_radius: 3.0
   desired_height: 1.5
+  angular_speed: 1.0  # rad/s
+  radius_tolerance: 0.6  # ±30%
+  height_tolerance: 0.3  # ±30cm
+  debug: true
+  debug_interval: 10

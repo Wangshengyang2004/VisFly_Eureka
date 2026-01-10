@@ -18,16 +18,11 @@ This directory contains configuration files for the VisFly-Eureka project.
    ```yaml
    openai:
      api_key: "your-actual-openai-key"
-   
-   yunwu:
-     api_key: "your-actual-yunwu-key"
-     base_url: "https://yunwu.ai/v1"
    ```
 
 3. Alternative: Use environment variables:
    ```bash
    export OPENAI_API_KEY="your-key-here"
-   export YUNWU_API_KEY="your-key-here"
    export ANTHROPIC_API_KEY="your-key-here"
    ```
 

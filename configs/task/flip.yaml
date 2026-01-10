@@ -1,0 +1,24 @@
+# Flip task configuration
+
+task:
+  name: "drone_flip"
+  category: "flip"
+  envs: "flip"  # Environment to use for this task
+
+  # Task description for LLM
+  description: >
+    Perform a flip maneuver: HOVER -> FLIP -> HOVER trajectory.
+
+    The drone must:
+    1. Hover at target position initially (hover_before_steps)
+    2. Execute a complete flip maneuver (flip_steps)
+    3. Return to stable hover at target position (hover_after_steps)
+    4. Maintain control throughout the entire trajectory
+    5. Minimize deviation from target position during and after flip
+
+    Reward function should:
+    - Reward maintaining position during hover phases
+    - Reward completing the flip maneuver smoothly
+    - Penalize deviations from target position
+    - Balance stability vs. maneuver execution
+    - Provide trajectory-phase-aware shaping rewards

@@ -26,11 +26,265 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 import torch
+import numpy as np
 
-try:
-    import cv2  # type: ignore
-except Exception:  # pragma: no cover - optional dependency for video export
-    cv2 = None
+import cv2  # type: ignore
+
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+
+# Import FigFashion from VisFly for 3x3 plots
+import sys
+from pathlib import Path
+visfly_path = Path(__file__).resolve().parents[2] / "VisFly"
+if str(visfly_path) not in sys.path:
+    sys.path.insert(0, str(visfly_path))
+from VisFly.utils.FigFashion.FigFashion import FigFon
+from VisFly.utils.maths import Quaternion
+import torch as th
+
+
+def ensure_video_writer(writer: Optional[Any], frame: np.ndarray, path: Path, fps: int) -> Any:
+    """Ensure video writer is initialized using run.py approach"""
+    if writer is not None:
+        return writer
+    height, width = frame.shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
+    writer = cv2.VideoWriter(str(path), fourcc, fps, (width, height))
+    if not writer.isOpened():
+        raise RuntimeError(f"Failed to open video writer at {path}")
+    return writer
+
+
+def record_frame(env: Any, writer: Optional[Any], path: Path, fps: int) -> Optional[Any]:
+    """Record frame using run.py approach"""
+    try:
+        frame = env.render(mode="rgb_array")
+    except TypeError:
+        frame = env.render()
+
+    if isinstance(frame, dict):
+        frame = next(iter(frame.values()))
+    frame = np.asarray(frame)
+
+    if frame.ndim == 4:
+        frame = frame[0]
+    if frame.shape[0] in (1, 3, 4) and frame.shape[-1] not in (3, 4):
+        frame = np.moveaxis(frame, 0, -1)
+    if frame.shape[-1] == 4:
+        frame = frame[..., :3]
+    if frame.dtype != np.uint8:
+        frame = np.clip(frame * 255 if frame.max() <= 1.0 else frame, 0, 255).astype(np.uint8)
+
+    writer = ensure_video_writer(writer, frame, path, fps)
+    writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    return writer
+
+
+def snapshot_env(env: Any) -> Dict[str, np.ndarray]:
+    """Capture environment state for trajectory plotting"""
+    def to_numpy(value: Any) -> np.ndarray:
+        if value is None:
+            return None
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().numpy().copy()
+        return np.array(value, copy=True)
+
+    if hasattr(env, "target"):
+        target_attr = env.target
+    elif hasattr(env, "target_position"):
+        target_attr = env.target_position
+    else:
+        target_attr = None
+
+    return {
+        "position": to_numpy(env.position),
+        "velocity": to_numpy(env.velocity),
+        "orientation": to_numpy(env.orientation),
+        "angular_velocity": to_numpy(env.angular_velocity),
+        "target": to_numpy(target_attr),
+    }
+
+
+def plot_trajectory(trajectory: List[Dict[str, np.ndarray]], output: Path, episode_idx: int, logger: logging.Logger) -> None:
+    """Plot trajectory using 3x3 subplot layout with VisFly FigFashion helper"""
+    positions = np.stack([step["position"] for step in trajectory])
+    velocities = np.stack([step["velocity"] for step in trajectory])
+    orientations = np.stack([step.get("orientation", np.zeros((1, 4))) for step in trajectory])
+    angular_velocities = np.stack([step.get("angular_velocity", np.zeros((1, 3))) for step in trajectory])
+
+    if positions.ndim == 2:
+        positions = positions[:, None, :]
+    if velocities.ndim == 2:
+        velocities = velocities[:, None, :]
+    if orientations.ndim == 2:
+        orientations = orientations[:, None, :]
+    if angular_velocities.ndim == 2:
+        angular_velocities = angular_velocities[:, None, :]
+
+    timesteps = np.arange(len(positions))
+    num_agents = positions.shape[1]
+
+    target = trajectory[0].get("target")
+    if target is not None:
+        target = np.asarray(target)
+        if target.ndim == 1:
+            target = target.reshape(1, -1)
+
+    # Use FigFashion for 3x3 layout
+    fig, axes = FigFon.get_figure_axes(SubFigSize=(3, 3), Column=2, HeightScale=1.2)
+    axes_flat = axes.flatten()
+    
+    # Replace first axes with 3D projection for trajectory plot
+    axes_flat[0].remove()
+    axes_flat[0] = fig.add_subplot(3, 3, 1, projection="3d")
+
+    # Compute mean values across agents
+    mean_pos = positions.mean(axis=1)
+    mean_vel = velocities.mean(axis=1)
+    mean_angvel = angular_velocities.mean(axis=1)
+    mean_ori = orientations.mean(axis=1)
+
+    # Convert quaternion orientations to Euler angles (roll, pitch, yaw)
+    # Orientation format: [w, x, y, z] from dynamics.orientation (via toTensor())
+    euler_angles = np.zeros((len(timesteps), 3))  # [roll, pitch, yaw]
+    for i in range(len(timesteps)):
+        q_arr = mean_ori[i]  # Shape: (4,) numpy array [w, x, y, z]
+        if q_arr.shape[0] == 4:
+            # Convert to torch tensor and create Quaternion object
+            # Quaternion expects [w, x, y, z] format
+            q = Quaternion(
+                w=th.tensor(q_arr[0], dtype=th.float32),
+                x=th.tensor(q_arr[1], dtype=th.float32),
+                y=th.tensor(q_arr[2], dtype=th.float32),
+                z=th.tensor(q_arr[3], dtype=th.float32)
+            )
+            euler = q.toEuler(order="zyx")  # Returns [roll, pitch, yaw] tensor
+            euler_angles[i] = euler.detach().cpu().numpy()
+        else:
+            # Fallback: skip if invalid shape
+            logger.warning(f"Invalid orientation shape at timestep {i}: {q_arr.shape}")
+
+    # Plot 1: 3D Trajectory
+    ax_3d = axes_flat[0]
+    for agent_idx in range(min(num_agents, 4)):
+        x, y, z = positions[:, agent_idx, :].T
+        ax_3d.plot(x, y, z, linewidth=1.5)
+        ax_3d.scatter(x[0], y[0], z[0], color="green", marker="o", s=50, label="Start" if agent_idx == 0 else "")
+        ax_3d.scatter(x[-1], y[-1], z[-1], color="red", marker="x", s=60, label="End" if agent_idx == 0 else "")
+    if target is not None:
+        ax_3d.scatter(target[:, 0], target[:, 1], target[:, 2], color="blue", marker="*", s=120, label="Target")
+    ax_3d.set_xlabel("X (m)")
+    ax_3d.set_ylabel("Y (m)")
+    ax_3d.set_zlabel("Z (m)")
+    ax_3d.set_title("3D Trajectory")
+    ax_3d.legend()
+
+    # Plot 2: Position (X, Y, Z)
+    axes_flat[1].plot(timesteps, mean_pos[:, 0], label="X", color="blue", linewidth=1.5)
+    axes_flat[1].plot(timesteps, mean_pos[:, 1], label="Y", color="green", linewidth=1.5)
+    axes_flat[1].plot(timesteps, mean_pos[:, 2], label="Z", color="red", linewidth=1.5)
+    axes_flat[1].set_xlabel("Time Step")
+    axes_flat[1].set_ylabel("Position (m)")
+    axes_flat[1].legend()
+    axes_flat[1].grid(True)
+    axes_flat[1].set_title("Position")
+
+    # Plot 3: Velocity (Vx, Vy, Vz)
+    axes_flat[2].plot(timesteps, mean_vel[:, 0], label="Vx", color="blue", linewidth=1.5)
+    axes_flat[2].plot(timesteps, mean_vel[:, 1], label="Vy", color="green", linewidth=1.5)
+    axes_flat[2].plot(timesteps, mean_vel[:, 2], label="Vz", color="red", linewidth=1.5)
+    axes_flat[2].set_xlabel("Time Step")
+    axes_flat[2].set_ylabel("Velocity (m/s)")
+    axes_flat[2].legend()
+    axes_flat[2].grid(True)
+    axes_flat[2].set_title("Velocity")
+
+    # Plot 4: Angular Velocity (ωx, ωy, ωz)
+    axes_flat[3].plot(timesteps, mean_angvel[:, 0], label="ωx", color="blue", linewidth=1.5)
+    axes_flat[3].plot(timesteps, mean_angvel[:, 1], label="ωy", color="green", linewidth=1.5)
+    axes_flat[3].plot(timesteps, mean_angvel[:, 2], label="ωz", color="red", linewidth=1.5)
+    axes_flat[3].set_xlabel("Time Step")
+    axes_flat[3].set_ylabel("Angular Velocity (rad/s)")
+    axes_flat[3].legend()
+    axes_flat[3].grid(True)
+    axes_flat[3].set_title("Angular Velocity")
+
+    # Plot 5: Euler Angles (Roll, Pitch, Yaw)
+    axes_flat[4].plot(timesteps, np.degrees(euler_angles[:, 0]), label="Roll", color="blue", linewidth=1.5)
+    axes_flat[4].plot(timesteps, np.degrees(euler_angles[:, 1]), label="Pitch", color="green", linewidth=1.5)
+    axes_flat[4].plot(timesteps, np.degrees(euler_angles[:, 2]), label="Yaw", color="red", linewidth=1.5)
+    axes_flat[4].set_xlabel("Time Step")
+    axes_flat[4].set_ylabel("Euler Angles (deg)")
+    axes_flat[4].legend()
+    axes_flat[4].grid(True)
+    axes_flat[4].set_title("Orientation (Euler)")
+
+    # Plot 6: Distance to Target
+    if target is not None:
+        target_pos = target[0] if target.ndim == 2 else target
+        distances = np.linalg.norm(positions - target_pos, axis=2).mean(axis=1)
+        axes_flat[5].plot(timesteps, distances, color="orange", linewidth=1.5, label="Distance")
+        axes_flat[5].set_xlabel("Time Step")
+        axes_flat[5].set_ylabel("Distance (m)")
+        axes_flat[5].legend()
+        axes_flat[5].grid(True)
+        axes_flat[5].set_title("Distance to Target")
+    else:
+        distances = np.linalg.norm(positions, axis=2).mean(axis=1)
+        axes_flat[5].plot(timesteps, distances, color="orange", linewidth=1.5, label="Distance from Origin")
+        axes_flat[5].set_xlabel("Time Step")
+        axes_flat[5].set_ylabel("Distance (m)")
+        axes_flat[5].legend()
+        axes_flat[5].grid(True)
+        axes_flat[5].set_title("Distance from Origin")
+
+    # Plot 7: Speed Magnitude
+    speed_magnitude = np.linalg.norm(mean_vel, axis=1)
+    axes_flat[6].plot(timesteps, speed_magnitude, color="purple", linewidth=1.5, label="Speed")
+    axes_flat[6].set_xlabel("Time Step")
+    axes_flat[6].set_ylabel("Speed (m/s)")
+    axes_flat[6].legend()
+    axes_flat[6].grid(True)
+    axes_flat[6].set_title("Speed Magnitude")
+
+    # Plot 8: Angular Velocity Magnitude
+    angvel_magnitude = np.linalg.norm(mean_angvel, axis=1)
+    axes_flat[7].plot(timesteps, angvel_magnitude, color="purple", linewidth=1.5, label="|ω|")
+    axes_flat[7].set_xlabel("Time Step")
+    axes_flat[7].set_ylabel("Angular Velocity (rad/s)")
+    axes_flat[7].legend()
+    axes_flat[7].grid(True)
+    axes_flat[7].set_title("Angular Velocity Magnitude")
+
+    # Plot 9: Position Error (if target exists) or Position Magnitude
+    if target is not None:
+        target_pos = target[0] if target.ndim == 2 else target
+        pos_error = positions - target_pos
+        mean_error = pos_error.mean(axis=1)
+        axes_flat[8].plot(timesteps, mean_error[:, 0], label="Ex", color="blue", linewidth=1.5)
+        axes_flat[8].plot(timesteps, mean_error[:, 1], label="Ey", color="green", linewidth=1.5)
+        axes_flat[8].plot(timesteps, mean_error[:, 2], label="Ez", color="red", linewidth=1.5)
+        axes_flat[8].set_xlabel("Time Step")
+        axes_flat[8].set_ylabel("Position Error (m)")
+        axes_flat[8].legend()
+        axes_flat[8].grid(True)
+        axes_flat[8].set_title("Position Error")
+    else:
+        pos_magnitude = np.linalg.norm(mean_pos, axis=1)
+        axes_flat[8].plot(timesteps, pos_magnitude, color="purple", linewidth=1.5, label="Position Magnitude")
+        axes_flat[8].set_xlabel("Time Step")
+        axes_flat[8].set_ylabel("Position (m)")
+        axes_flat[8].legend()
+        axes_flat[8].grid(True)
+        axes_flat[8].set_title("Position Magnitude")
+
+    plt.tight_layout()
+    fig_path = output / f"trajectory_episode_{episode_idx:03d}.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved trajectory plot: {fig_path}")
 
 
 def _mean(values: List[float]) -> float:
@@ -120,12 +374,14 @@ def _inject_reward_to_class(env_class: Any, reward_code: str, logger: logging.Lo
     """Inject user-provided get_reward into environment class (like run.py)."""
     import numpy as np  # noqa: F401
     import torch as th
+    import math
     # Use same execution context as run.py
     exec_globals: Dict[str, Any] = {
         "torch": th,
         "th": th,
         "np": __import__("numpy"),
         "numpy": __import__("numpy"),
+        "math": math,
     }
     try:
         exec(reward_code, exec_globals)
@@ -148,9 +404,6 @@ def _inject_reward_to_class(env_class: Any, reward_code: str, logger: logging.Lo
         return False
 
 
-# Removed legacy _inject_reward function - now using class-level injection
-
-
 def _load_yaml(path: Path) -> Dict[str, Any]:
     with open(path, "r") as f:
         return yaml.safe_load(f)
@@ -161,6 +414,9 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     logger = logging.getLogger(__name__)
 
+    # Initialize variables early to avoid locals() checks
+    cfg = None
+    identifier = "unknown"
     env: Optional[Any] = None
     env_eval: Optional[Any] = None
 
@@ -204,7 +460,10 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
 
         # Algorithm and device setup
         algorithm = optimization_config["algorithm"].lower()
-        eval_episodes = int(optimization_config["evaluation_episodes"])
+        eval_episodes_raw = int(optimization_config["evaluation_episodes"])
+        if eval_episodes_raw < 1:
+            logger.warning(f"evaluation_episodes must be >= 1, got {eval_episodes_raw}. Using 1.")
+        eval_episodes = max(1, eval_episodes_raw)
 
         # Load algorithm config - extract environment name from class path
         logger.info("[stage] loading algorithm config ...")
@@ -218,7 +477,7 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         
         # Use configured training steps (respect the config!)
         train_steps = int(learn_params["total_timesteps"])
-        log_interval = learn_params["log_interval"]
+        log_interval = learn_params.get("log_interval", 20)  # Default to 20 if not specified
         
         logger.info(f"Training configuration: {train_steps} timesteps, log_interval={log_interval}")
         
@@ -240,7 +499,7 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
 
         # Create BPTT algorithm
         logger.info("[stage] instantiating BPTT algorithm ...")
-        from algorithms.BPTT import BPTT
+        from algorithms.BPTT_series.BPTT import BPTT
 
         alg_params["env"] = env
         alg_params.setdefault("policy", "SimplePolicy")
@@ -258,16 +517,12 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         logger.info(f"[stage] starting training for {train_steps} steps ...")
         t0 = time.time()
         
-        # Track GPU memory if using CUDA
+        # Track GPU memory
         peak_memory_mb = 0
-        if torch.cuda.is_available() and alg_device.startswith("cuda"):
-            gpu_id = int(alg_device.split(":")[1]) if ":" in alg_device else 0
-            try:
-                initial_memory = torch.cuda.memory_allocated(gpu_id) // (1024**2)  # MB
-                torch.cuda.reset_peak_memory_stats(gpu_id)
-                logger.info(f"Initial GPU memory: {initial_memory}MB")
-            except Exception as e:
-                logger.warning(f"GPU memory tracking failed: {e}")
+        gpu_id = int(alg_device.split(":")[1]) if ":" in alg_device else 0
+        initial_memory = torch.cuda.memory_allocated(gpu_id) // (1024**2)  # MB
+        torch.cuda.reset_peak_memory_stats(gpu_id)
+        logger.info(f"Initial GPU memory: {initial_memory}MB")
         
         # Prepare training arguments
         train_args = {"total_timesteps": int(train_steps)}
@@ -279,29 +534,16 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         training_time = time.time() - t0
         
         # Get peak GPU memory usage
-        if torch.cuda.is_available() and alg_device.startswith("cuda"):
-            gpu_id = int(alg_device.split(":")[1]) if ":" in alg_device else 0
-            try:
-                peak_memory_mb = torch.cuda.max_memory_allocated(gpu_id) // (1024**2)  # MB
-                final_memory = torch.cuda.memory_allocated(gpu_id) // (1024**2)  # MB
-                logger.info(f"Peak GPU memory: {peak_memory_mb}MB, Final: {final_memory}MB")
-            except Exception as e:
-                logger.warning(f"GPU memory tracking failed: {e}")
+        peak_memory_mb = torch.cuda.max_memory_allocated(gpu_id) // (1024**2)  # MB
+        final_memory = torch.cuda.memory_allocated(gpu_id) // (1024**2)  # MB
+        logger.info(f"Peak GPU memory: {peak_memory_mb}MB, Final: {final_memory}MB")
         
         logger.info(f"Training completed in {training_time:.2f}s")
         
         # Save trained model
-        model_saved = False
         model_save_path = Path(output_dir) / "trained_model.zip"
-        try:
-            if hasattr(model, 'save'):
-                model.save(str(model_save_path))
-                model_saved = True
-                logger.info(f"Saved trained model to: {model_save_path}")
-            else:
-                logger.warning("Model does not support saving (no 'save' method)")
-        except Exception as e:
-            logger.warning(f"Failed to save model: {e}")
+        model.save(str(model_save_path))
+        logger.info(f"Saved trained model to: {model_save_path}")
 
         # Create evaluation env (requires_grad False)
         eval_env_config = {**eval_env_config, "requires_grad": False}
@@ -314,9 +556,9 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         import torch as th
 
         requested_eval_episodes = int(eval_episodes)
-        eval_runs = max(10, requested_eval_episodes)
+        eval_runs = max(1, requested_eval_episodes)  # Ensure at least 1 episode
         logger.info(
-            f"[stage] evaluating trained policy over {eval_runs} episodes (requested: {requested_eval_episodes})"
+            f"[stage] evaluating trained policy over {eval_runs} episodes"
         )
 
         success_flags: List[bool] = []
@@ -332,23 +574,22 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         video_enabled = record_video and bool(eval_env_config.get("visual", False))
         video_fps = float(eval_env_config.get("video_fps", 30.0))
         video_dir = Path(output_dir) / "videos"
+        plots_dir = Path(output_dir) / "plots"
 
         # Verbose diagnostics for video settings
         logger.info(
             f"[video] requested={record_video}, eval_env.visual={bool(eval_env_config.get('visual', False))}, "
-            f"enabled={video_enabled}, cv2_available={cv2 is not None}, fps={video_fps}, dir={video_dir}"
+            f"enabled={video_enabled}, fps={video_fps}, dir={video_dir}"
         )
         if record_video and not bool(eval_env_config.get("visual", False)):
             logger.warning("[video] Disabled because eval_env.visual is False. Enable visual=true under eval_env.")
         if video_enabled:
             video_dir.mkdir(parents=True, exist_ok=True)
-            if cv2 is None:
-                logger.warning(
-                    "[video] OpenCV (cv2) unavailable; disabling video export despite visual evaluation."
-                )
-                video_enabled = False
 
-        model.policy.set_training_mode(False) if hasattr(model, "policy") else None
+        # Create plots directory for trajectory plots
+        plots_dir.mkdir(parents=True, exist_ok=True)
+
+        model.policy.set_training_mode(False)
 
         for episode_idx in range(eval_runs):
             obs = env_eval.reset()
@@ -357,8 +598,10 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
             episode_reward = 0.0
             last_info = None
             video_writer = None
-            frames_captured = 0
-            video_path = None
+            video_path = video_dir / f"episode_{episode_idx:03d}.mp4" if video_enabled else None
+
+            # Initialize trajectory tracking
+            trajectory = [snapshot_env(env_eval)]
 
             while step_count < max_steps and not done_flag:
                 with torch.no_grad():
@@ -387,94 +630,46 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
                 else:
                     done_flag = bool(done_arr)
 
+                # Capture trajectory data after each step
+                trajectory.append(snapshot_env(env_eval))
+
+                # Record video frame using run.py approach
                 if video_enabled:
-                    frame = None
-                    try:
-                        frame = env_eval.render()
-                    except Exception as render_err:  # pragma: no cover - render depends on runtime
-                        logger.warning(f"[video] Episode {episode_idx} step {step_count}: render() failed: {render_err}")
-                        frame = None
-                    if frame is None and step_count < 3:
-                        logger.warning(f"[video] Episode {episode_idx} step {step_count}: render() returned None")
-                    rgb_frame = _extract_rgb_frame(frame)
-                    if rgb_frame is None and step_count < 3:
-                        try:
-                            shape = getattr(frame, 'shape', None)
-                            ftype = type(frame).__name__ if frame is not None else None
-                        except Exception:
-                            shape, ftype = None, None
-                        logger.warning(
-                            f"[video] Episode {episode_idx} step {step_count}: could not extract RGB frame; "
-                            f"frame_type={ftype}, shape={shape}"
-                        )
-                    if rgb_frame is not None and cv2 is not None:
-                        if video_writer is None:
-                            try:
-                                height, width = rgb_frame.shape[:2]
-                                fourcc = cv2.VideoWriter_fourcc(*"avc1")  # Use avc1 for better compatibility
-                                video_path = video_dir / f"episode_{episode_idx:02d}.mp4"
-                                logger.info(
-                                    f"[video] Initializing writer: {width}x{height} @ {video_fps}fps, codec=avc1 -> {video_path}"
-                                )
-                                video_writer = cv2.VideoWriter(
-                                    str(video_path), fourcc, video_fps, (width, height)
-                                )
-                            except Exception as e:
-                                logger.warning(f"[video] Failed to create VideoWriter: {e}")
-                                video_writer = None
-                                video_path = None
-                                video_enabled = False
-                        if video_writer is not None and not video_writer.isOpened():
-                            # Provide diagnostic info about OpenCV build
-                            try:
-                                import cv2 as _cv2
-                                build = getattr(_cv2, 'getBuildInformation', lambda: '')()
-                                ffmpeg_info = next((ln for ln in build.splitlines() if 'FFMPEG' in ln.upper()), None)
-                                logger.warning(
-                                    f"[video] VideoWriter failed to open for {video_path}. cv2={_cv2.__version__}. "
-                                    f"FFMPEG: {ffmpeg_info if ffmpeg_info else 'Unknown'}"
-                                )
-                            except Exception:
-                                logger.warning(
-                                    f"[video] VideoWriter failed to open for {video_path}. cv2 version check failed."
-                                )
-                            try:
-                                video_writer.release()
-                            except Exception:
-                                pass
-                            video_writer = None
-                            video_path = None
-                            video_enabled = False
-                        if video_writer is not None:
-                            try:
-                                bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-                                video_writer.write(bgr_frame)
-                                frames_captured += 1
-                            except Exception as e:
-                                logger.warning(f"[video] Failed to write frame: {e}")
+                    video_writer = record_frame(env_eval, video_writer, video_path, 30)
 
                 step_count += 1
 
             if video_writer is not None:
                 video_writer.release()
-                if video_path is not None:
-                    saved_videos.append(str(video_path))
-                    logger.info(f"[video] Saved {video_path} with {frames_captured} frames")
-            elif video_enabled and frames_captured == 0:
-                logger.warning(f"[video] Episode {episode_idx}: no frames captured; check render() and codec support")
+                saved_videos.append(str(video_path))
+                logger.info(f"[video] Saved {video_path}")
 
-            if hasattr(env_eval, "get_success"):
-                success_tensor = env_eval.get_success()
-                if isinstance(success_tensor, th.Tensor):
-                    success_bool = bool(success_tensor.any().item())
-                else:
-                    success_bool = bool(success_tensor)
-            elif last_info:
-                success_bool = any(
-                    info.get("is_success", False) for info in last_info if isinstance(info, dict)
-                )
+            # Create trajectory plot for this episode
+            plot_trajectory(trajectory, plots_dir, episode_idx, logger)
+
+            # Save trajectory data as npz file for LLM analysis
+            trajectory_dir = Path(output_dir) / "trajectories"
+            trajectory_dir.mkdir(parents=True, exist_ok=True)
+            trajectory_npz_path = trajectory_dir / f"episode_{episode_idx:03d}.npz"
+            
+            # Convert trajectory list to numpy arrays
+            trajectory_data = {
+                "positions": np.stack([step["position"] for step in trajectory]),
+                "velocities": np.stack([step["velocity"] for step in trajectory]),
+                "orientations": np.stack([step.get("orientation", np.zeros((1, 4))) for step in trajectory]),
+                "angular_velocities": np.stack([step.get("angular_velocity", np.zeros((1, 3))) for step in trajectory]),
+            }
+            if trajectory[0].get("target") is not None:
+                trajectory_data["target"] = np.asarray(trajectory[0]["target"])
+            
+            np.savez_compressed(trajectory_npz_path, **trajectory_data)
+            logger.info(f"Saved trajectory data to {trajectory_npz_path}")
+
+            success_tensor = env_eval.get_success()
+            if isinstance(success_tensor, th.Tensor):
+                success_bool = bool(success_tensor.any().item())
             else:
-                success_bool = episode_reward > 0
+                success_bool = bool(success_tensor)
 
             if not success_bool and last_info:
                 success_bool = any(
@@ -483,25 +678,30 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
 
             success_flags.append(success_bool)
 
-            collision_flag = False
-            if hasattr(env_eval, "is_collision"):
-                try:
-                    collision_flag = bool(env_eval.is_collision.any().item())
-                except Exception:
-                    collision_flag = bool(env_eval.is_collision)
+            collision_flag = bool(env_eval.is_collision.any().item())
             collision_flags.append(collision_flag)
 
             episode_lengths.append(float(step_count))
             episode_rewards.append(float(episode_reward))
 
-            final_distance = None
-            if hasattr(env_eval, "position") and hasattr(env_eval, "target"):
-                try:
-                    distance_tensor = (env_eval.position - env_eval.target).norm(dim=1)
-                    final_distance = float(distance_tensor.mean().item())
-                    final_distances.append(final_distance)
-                except Exception:
-                    final_distance = None
+            target_for_distance = getattr(env_eval, "target", None)
+            if target_for_distance is None:
+                target_for_distance = getattr(env_eval, "target_position", None)
+
+            if target_for_distance is not None:
+                if isinstance(target_for_distance, th.Tensor):
+                    target_tensor = target_for_distance
+                else:
+                    target_tensor = th.tensor(target_for_distance, device=env_eval.position.device, dtype=env_eval.position.dtype)
+
+                if target_tensor.ndim == 1:
+                    target_tensor = target_tensor.unsqueeze(0)
+
+                distance_tensor = (env_eval.position - target_tensor).norm(dim=1)
+                final_distance = float(distance_tensor.mean().item())
+                final_distances.append(final_distance)
+            else:
+                final_distances.append(float("nan"))
 
             time_truncated = False
             if last_info:
@@ -526,12 +726,10 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
                 "success": success_bool,
                 "collision": collision_flag,
                 "termination_reason": termination_reason,
-                "frames_captured": frames_captured,
+                "final_distance_to_target": final_distance,
+                "video_path": str(video_path) if video_path else None,
+                "trajectory_path": str(trajectory_npz_path),
             }
-            if final_distance is not None:
-                episode_record["final_distance_to_target"] = final_distance
-            if video_path is not None:
-                episode_record["video_path"] = str(video_path)
 
             episode_details.append(episode_record)
 
@@ -583,8 +781,7 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
             "convergence_step": train_steps,
             "output_dir": str(output_dir),
             "peak_memory_mb": peak_memory_mb,
-            "model_saved": model_saved,
-            "model_path": str(model_save_path) if model_saved else None,
+            "model_path": str(model_save_path),
             "evaluation_runs": len(success_flags),
             "aggregate_statistics": aggregate_statistics,
             "episode_statistics": episode_details,
@@ -615,7 +812,7 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
                         "success": False,
                         "error": str(e),
                         "traceback": tb,
-                        "identifier": cfg.get("identifier", "unknown") if "cfg" in locals() else "unknown",
+                        "identifier": identifier,
                     },
                     f,
                     indent=2,

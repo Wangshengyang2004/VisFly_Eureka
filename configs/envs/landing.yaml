@@ -7,7 +7,7 @@ env:
       resolution: [64, 64]
       position: [0, 0.0, -0.2]  # Downward facing for landing
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
   dynamics_kwargs:
     dt: 0.02
     ctrl_dt: 0.02
@@ -42,7 +42,7 @@ eval_env:
   visual: true
   tensor_output: true
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
     render_settings:
       mode: fix
       view: custom

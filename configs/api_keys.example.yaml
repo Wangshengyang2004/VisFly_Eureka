@@ -5,15 +5,10 @@
 openai:
   api_key: "sk-YOUR_OPENAI_API_KEY_HERE"
 
-yunwu:
-  api_key: "sk-YOUR_YUNWU_API_KEY_HERE"
-  base_url: "https://yunwu.ai/v1"
-
 anthropic:
   api_key: "sk-YOUR_ANTHROPIC_API_KEY_HERE"
 
 # Environment variable alternative:
 # You can also set these as environment variables:
 # export OPENAI_API_KEY="your-key-here"
-# export YUNWU_API_KEY="your-key-here"
 # export ANTHROPIC_API_KEY="your-key-here"

@@ -2,36 +2,42 @@
 # This is the main config file that references specific algorithm and environment configs
 
 defaults:
-  - envs: hover
-  - llm: glm-4.5
-  - task: hover_task
+  - task: hover
+  - llm: gpt-5-nano
+  - mode: eureka
   - api_keys
   - _self_
 
 # Global pipeline settings
 pipeline:
-  name: "visFly_eureka_optimization"
+  name: "quadro_llm_optimization"
   output_dir: "./results"
   seed: 42
   
 # Optimization parameters
 optimization:
-  iterations: 8           # Number of optimization iterations
-  samples: 15           # Reward functions per iteration
-  algorithm: "shac"      # Training algorithm: "bptt", "ppo", or "shac"
-  evaluation_episodes: 10  # Episodes for final evaluation
-  record_video: true       # Enable MP4 export during evaluation runs
+  iterations: 5           # Number of optimization iterations
+  samples: 15          # Reward functions per iteration
+  algorithm: "bptt"      # Training algorithm: "bptt", "ppo", or "shac"
+  evaluation_episodes: 1  # Episodes for final evaluation
+  record_video: true       # Enable video recording during evaluation
+  gpu_memory_requirement_mb: 1024
+  # History pruning: number of recent iterations to include in LLM context
+  # -1 = keep all history (no pruning)
+  # 0 = Eureka-style: only keep current iteration (aggressive pruning)
+  # 1 = keep last iteration (similar to LaRes)
+  # 2+ = keep last N iterations (balanced approach, recommended: 2)
+  history_window_size: 2
 
 training:
   # Global overrides (optional)
   save_dir: "./results/training"
-  comment: "eureka_experiment"
+  comment: "quadro_llm_experiment"
 
 # Execution settings
 execution:
   device: "cuda"  # "cuda" or "cpu"
-  max_workers: 16  # Maximum parallel reward evaluations
-  timeout_per_sample: 5400  # 30 minutes timeout per sample
+  workload_ratio: 2  # Workers per GPU ratio (default: 2x GPU count)
   
 # Logging and monitoring
 logging:
@@ -39,9 +45,14 @@ logging:
   save_tensorboard: true
   save_all_functions: true
 
+# Prompt configuration for LLM
+prompt:
+  include_api_doc: true
+  include_human_reward: true
+
 # Hydra configuration
 hydra:
   run:
     dir: ./results/${now:%Y-%m-%d_%H-%M-%S}
   job:
-    name: eureka_optimization
+    name: quadro_llm_optimization

@@ -1,42 +1,65 @@
+# FlipEnv: HOVER -> FLIP -> HOVER 轨迹
 env:
-  num_agent_per_scene: 40
+  num_agent_per_scene: 100
   max_episode_steps: 256
-  sensor_kwargs: []  # FlipEnv uses state-based observations only
+  # 轨迹参数 - 纯hover模式 (flip_steps=0)
+  hover_before_steps: 64
+  flip_steps: 64             # 0 = 纯hover模式，用于debug
+  hover_after_steps: 128
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_empty
   dynamics_kwargs:
     dt: 0.03
     ctrl_dt: 0.03
+    ctrl_delay: True
     action_type: "bodyrate"
-    ctrl_delay: true
-    cfg: "drone_d435i"
-  visual: true
-  requires_grad: true
-  tensor_output: true
-  device: "cpu"
-  flip_command: 6.28318  # 2*pi radians = 1 full rotation
+    cfg: "drone_flip"
+  visual: False
+  device: cpu
+  requires_grad: True
+  tensor_output: True
+  # debug: False
+  random_kwargs:
+    state_generator:
+      class: Uniform
+      kwargs:
+        - position:
+            mean: [15., 0., 3.0]
+            half: [0,0,0]
+  target: [15., 0., 3.0]
+  debug: True
+  debug_interval: 50
 
-# Evaluation environment
 eval_env:
   num_agent_per_scene: 1
+  visual: True
   max_episode_steps: 256
-  visual: true
-  tensor_output: true
+  hover_before_steps: 64
+  flip_steps: 64             # 0 = 纯hover模式，用于debug
+  hover_after_steps: 128
+  dynamics_kwargs:
+    dt: 0.03
+    ctrl_dt: 0.03
+    ctrl_delay: True
+    action_type: "bodyrate"
+    cfg: "drone_flip"
+  tensor_output: True
+  debug: True
+  debug_interval: 10
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_empty
     render_settings:
       mode: fix
       view: custom
       resolution: [1080, 1920]
-      position: [[0.0, -5.0, 3.0], [0.0, 0.0, 1.5]]
-      line_width: 6.0
-      trajectory: true
-  dynamics_kwargs:
-    dt: 0.03
-    ctrl_dt: 0.03
-    action_type: "bodyrate"
-    ctrl_delay: true
-    cfg: "drone_d435i"
-  requires_grad: false
-  device: "cpu"
-  flip_command: 6.28318
+      position: [[15., 6., 8.0], [15., 0, 5.0]]
+      line_width: 6.
+      trajectory: True
+  random_kwargs:
+    state_generator:
+      class: Uniform
+      kwargs:
+        - position:
+            mean: [15., 0., 3.0]
+            half: [0,0,0]
+  target: [15., 0., 3.0]

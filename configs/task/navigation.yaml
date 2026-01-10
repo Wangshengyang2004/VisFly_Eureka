@@ -1,0 +1,15 @@
+# Navigation task configuration
+
+task:
+  name: "drone_navigation"
+  category: "navigation"
+  envs: "navigation"  # Environment to use for this task
+
+  # Task description for LLM
+  description: >
+    Navigate drone to target position efficiently while avoiding obstacles.
+
+    The drone must:
+    1. Reach the target position with high precision
+    2. Avoid collisions
+    3. Maintain stable flight dynamics

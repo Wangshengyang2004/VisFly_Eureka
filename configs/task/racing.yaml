@@ -1,0 +1,24 @@
+# Racing task configuration
+
+task:
+  name: "drone_racing"
+  category: "racing"
+  envs: "racing"  # Environment to use for this task
+
+  # Task description for LLM
+  description: >
+    Race drone through gates as quickly as possible while maintaining control.
+
+    The drone must:
+    1. Pass through racing gates in sequence
+    2. Maintain high speed while avoiding crashes
+    3. Navigate tight turns and elevation changes
+    4. Complete the course within time limit
+    5. Minimize total race time
+
+    Reward function should:
+    - Reward gate passage with time bonuses
+    - Penalize crashes and course deviations
+    - Balance speed vs. control trade-offs
+    - Encourage smooth racing lines
+    - Provide progress-based shaping rewards

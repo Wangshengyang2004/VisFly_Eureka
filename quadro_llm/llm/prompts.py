@@ -12,14 +12,16 @@ def create_system_prompt() -> str:
     """Create system prompt for LLM reward function generation."""
     return (
         "You are a reward engineer creating reinforcement-learning reward functions. "
-        "Write a complete `def get_reward(self) -> torch.Tensor` implementation that helps the policy master "
+        "Write a complete `def get_reward(self, predicted_obs=None) -> torch.Tensor` implementation that helps the policy master "
         "each VisFly task.\n\n"
         "Authoritative guidance:\n"
         "- Operate entirely in PyTorch; never fall back to NumPy or Python math.\n"
         "- Return a 1-D tensor of length `self.num_agent` on `self.device`.\n"
-        "- SHAC/BPTT REQUIRE you to clone dynamics tensors: always write `(self.velocity - 0)` and `(self.angular_velocity - 0)` (and apply the same `- 0` trick to every tensor whose name contains `vel` or `ang_vel`) before using them in calculations.\n"
+        "- Scale rewards to reasonable values for stable training.\n"
+        "- SHAC/BPTT REQUIRE you to clone dynamics tensors: always write `(self.velocity - 0)`, `(self.angular_velocity - 0)`, `(self.envs.acceleration - 0)`, and `(self.envs.angular_acceleration - 0)` before using them in calculations. Apply the same `- 0` trick to any tensor whose name contains `vel`, `accel`, or `ang`.\n"
         "- Avoid in-place edits, boolean indexing assignment, or constructing new tensors with mismatched devices.\n"
         "- Use `torch.where`, `torch.clamp`, vector norms, and smooth penalties to combine reward terms.\n"
+        "- Orientation data is in `self.orientation`; there is no `self.rotation` matrix attribute.\n"
         "- Make collision handling robust by reading `self.collision_dis` / `self.collision_vector` rather than raw sensor pixels; `self.collision_vector` already points from the drone toward the closest surface.\n"
         "- Use only attributes shown in the environment stub or API reference. Fields like `self.action`, `self.actions`, or ad-hoc caches are not available.\n"
         "- Do not guard attribute access with `hasattr` or `if ... exists` checks—omit uncertain terms instead of guessing.\n\n"
@@ -28,7 +30,7 @@ def create_system_prompt() -> str:
         "- Do not instantiate tensors inside `torch.where` (use scalar literals).\n"
         "- Do not mix `_step_count` scalars directly with tensors without broadcasting helpers.\n"
         "- Do not rely on TorchScript; focus on readable, differentiable PyTorch.\n\n"
-        "Deliver confident, well-structured code that balances progress, stability, and safety signals."
+        "Deliver confident, well-structured code with minimal comments. Avoid redundant comments that simply restate the code."
     )
 
 
@@ -85,49 +87,110 @@ def extract_env_code_without_reward(env_class) -> str:
     return load_environment_code(source_file)
 
 
+def extract_human_reward(env_class) -> Optional[str]:
+    """
+    Extract the human-designed reward function from environment class.
+
+    Args:
+        env_class: Environment class to extract reward function from
+
+    Returns:
+        Human reward function code as string, or None if extraction fails
+    """
+    import re
+    import inspect
+    from pathlib import Path
+    
+    try:
+        # Get the source file of the environment class
+        source_file = inspect.getfile(env_class)
+        env_file = Path(source_file)
+        
+        if not env_file.exists():
+            return None
+        
+        with open(env_file, 'r', encoding='utf-8') as f:
+            code = f.read()
+        
+        # Pattern to match the entire get_reward method
+        pattern = r'(def get_reward\(self[^)]*\)[^:]*:)(.*?)(?=\n    def |\n\nclass |\Z)'
+        
+        match = re.search(pattern, code, flags=re.DOTALL)
+        if match:
+            # Return the full method (signature + body)
+            return match.group(0).strip()
+        
+        return None
+    except Exception:
+        # Silently fail if extraction fails
+        return None
+
+
 def create_user_prompt(
     task_description: str,
     context_info: Dict[str, Any],
     feedback: str = "",
     env_code: str = "",
     api_doc: Optional[str] = None,
+    human_reward_code: Optional[str] = None,
+    elite_reward_code: Optional[str] = None,
+    include_static_info: bool = True,
 ) -> str:
     """Create the user-facing reward prompt following the Eureka structure.
 
     Template layout: environment stub -> optional API reference -> task briefing ->
-    structured context -> prior feedback -> final instructions.
+    structured context -> optional human reward -> prior feedback -> final instructions.
+    
+    Args:
+        include_static_info: If False, skip env_code, api_doc, task_description, and context_info
+            (useful when these are already in conversation history)
     """
     prompt_parts = []
 
-    if env_code:
-        prompt_parts.append("The Python environment is:")
+    if include_static_info:
+        if env_code:
+            prompt_parts.append("The Python environment is:")
+            prompt_parts.append("```python")
+            prompt_parts.append(env_code.strip())
+            prompt_parts.append("```")
+            prompt_parts.append("")
+
+        if api_doc:
+            prompt_parts.append("Environment API reference (read once, no need to repeat in output):")
+            prompt_parts.append("```text")
+            prompt_parts.append(api_doc.strip())
+            prompt_parts.append("```")
+            prompt_parts.append("")
+
+        prompt_parts.append(f"Task: {task_description}")
+
+        if context_info:
+            prompt_parts.append("\nKey environment details:")
+            for key in sorted(context_info.keys()):
+                value = context_info[key]
+                prompt_parts.append(f"- {key}: {value}")
+
+    if human_reward_code:
+        prompt_parts.append("\nReference reward function:")
         prompt_parts.append("```python")
-        prompt_parts.append(env_code.strip())
+        prompt_parts.append(human_reward_code.strip())
         prompt_parts.append("```")
-        prompt_parts.append("")
-
-    if api_doc:
-        prompt_parts.append("Environment API reference (read once, no need to repeat in output):")
-        prompt_parts.append("```text")
-        prompt_parts.append(api_doc.strip())
+    
+    if elite_reward_code:
+        prompt_parts.append("\nPrevious elite reward function (selected from last iteration):")
+        prompt_parts.append("```python")
+        prompt_parts.append(elite_reward_code.strip())
         prompt_parts.append("```")
-        prompt_parts.append("")
-
-    prompt_parts.append(f"Task: {task_description}")
-
-    if context_info:
-        prompt_parts.append("\nKey environment details:")
-        for key in sorted(context_info.keys()):
-            value = context_info[key]
-            prompt_parts.append(f"- {key}: {value}")
+        prompt_parts.append("You can use this as a reference, but try to improve upon it based on the feedback below.")
 
     if feedback:
         prompt_parts.append("\nFeedback from previous attempts (address every point):")
         prompt_parts.append(feedback.strip())
 
     prompt_parts.append(
-        "\nReturn only the complete `def get_reward(self) -> torch.Tensor` implementation. "
-        "Rely strictly on the documented attributes above—omit any term that would require guessing or `hasattr` checks."
+        "\nReturn only the complete `def get_reward(self, predicted_obs=None) -> torch.Tensor` implementation. "
+        "Rely strictly on the documented attributes above—omit any term that would require guessing or `hasattr` checks. "
+        "Keep the code concise with minimal comments."
     )
 
     return "\n".join(prompt_parts)
@@ -146,11 +209,11 @@ Current reward has issues:
 
 Issues: {performance_issues}
 
-Fix these problems. Remember BPTT gradient tips:
-- Use (self.velocity - 0) not self.velocity directly
-- Use (self.angular_velocity - 0) not self.angular_velocity directly
+Fix these problems. Remember SHAC/BPTT gradient tips: use (self.velocity - 0), (self.angular_velocity - 0), (self.envs.acceleration - 0), and (self.envs.angular_acceleration - 0) for dynamics tensors.
 
-Generate improved get_reward(self) method:"""
+Keep the code concise with minimal comments.
+
+Generate improved get_reward(self, predicted_obs=None) method:"""
 
 
 def create_context_aware_prompt(
@@ -182,56 +245,11 @@ def create_context_aware_prompt(
         )
 
     prompt_parts.append(
-        "\nUse (self.velocity - 0) and (self.angular_velocity - 0) for BPTT.\nGenerate get_reward(self):"
+        "\nRemember SHAC/BPTT: use (self.velocity - 0), (self.angular_velocity - 0), (self.envs.acceleration - 0), and (self.envs.angular_acceleration - 0) for dynamics tensors. Keep code concise.\n"
+        "Generate get_reward(self, predicted_obs=None):"
     )
 
     return "\n".join(prompt_parts)
-
-
-# Task-specific hints (concise)
-NAVIGATION_PROMPT_SUFFIX = """
-Navigation: Focus on distance to target, collision avoidance via depth, smooth velocity."""
-
-RACING_PROMPT_SUFFIX = """
-Racing: Maximize forward velocity, gate passing, optimize racing line."""
-
-HOVERING_PROMPT_SUFFIX = """
-Hovering: Minimize position/velocity errors, stabilize orientation. Use (self.velocity - 0)."""
-
-TRACKING_PROMPT_SUFFIX = """
-Tracking: Maintain relative position, smooth following, visual tracking."""
-
-
-def get_task_specific_prompt_suffix(task_description: str) -> str:
-    """
-    Get task-specific prompt suffix based on task description.
-
-    Args:
-        task_description: Natural language task description
-
-    Returns:
-        Task-specific prompt suffix
-    """
-    task_lower = task_description.lower()
-
-    if any(
-        keyword in task_lower
-        for keyword in ["navigate", "navigation", "path", "waypoint"]
-    ):
-        return NAVIGATION_PROMPT_SUFFIX
-    elif any(keyword in task_lower for keyword in ["race", "racing", "speed", "fast"]):
-        return RACING_PROMPT_SUFFIX
-    elif any(
-        keyword in task_lower
-        for keyword in ["hover", "hovering", "stable", "stationary"]
-    ):
-        return HOVERING_PROMPT_SUFFIX
-    elif any(
-        keyword in task_lower for keyword in ["track", "tracking", "follow", "chase"]
-    ):
-        return TRACKING_PROMPT_SUFFIX
-    else:
-        return ""
 
 
 def create_multi_objective_prompt(
@@ -247,7 +265,85 @@ def create_multi_objective_prompt(
         parts.append("Constraints: " + ", ".join(constraints))
 
     parts.append(
-        "\nBalance objectives with weights. Use (self.velocity - 0) for BPTT.\nGenerate get_reward(self):"
+        "\nBalance objectives with weights. Remember SHAC/BPTT: use (self.velocity - 0), (self.angular_velocity - 0), (self.envs.acceleration - 0), and (self.envs.angular_acceleration - 0) for dynamics tensors. Keep code concise.\n"
+        "Generate get_reward(self, predicted_obs=None):"
     )
 
     return "\n".join(parts)
+
+
+def create_coefficient_tuning_system_prompt() -> str:
+    """Create system prompt for coefficient tuning mode."""
+    return (
+        "You are a reward coefficient tuner. Your task is to optimize the coefficients "
+        "of a fixed reward function structure for a drone navigation task.\n\n"
+        "IMPORTANT: You must ONLY output coefficient values. Do NOT modify the reward function structure.\n"
+        "The reward function structure is fixed and cannot be changed.\n\n"
+        "Output format: Return a JSON object with coefficient names and values, or a simple key-value list."
+    )
+
+
+def create_coefficient_tuning_prompt(
+    task_description: str,
+    feedback: str = "",
+    current_coefficients: Optional[Dict[str, float]] = None,
+) -> str:
+    """
+    Create prompt for coefficient tuning mode.
+    
+    Args:
+        task_description: Task description
+        feedback: Feedback from previous iterations
+        current_coefficients: Current coefficient values (for reference)
+        
+    Returns:
+        Prompt string for LLM
+    """
+    from ..utils.coefficient_tuner import get_coefficient_names, get_default_coefficients
+    
+    prompt_parts = []
+    
+    prompt_parts.append(f"Task: {task_description}")
+    prompt_parts.append("")
+    prompt_parts.append("You are tuning coefficients for a FIXED reward function structure.")
+    prompt_parts.append("The reward function has the following components with tunable coefficients:")
+    prompt_parts.append("")
+    
+    # List all coefficients
+    default_coeffs = get_default_coefficients()
+    for name, default_value in default_coeffs.items():
+        prompt_parts.append(f"- {name}: default = {default_value}")
+    
+    prompt_parts.append("")
+    prompt_parts.append("The reward function structure is:")
+    prompt_parts.append("- base_r: base reward (constant)")
+    prompt_parts.append("- vel_r_coef: velocity matching target coefficient")
+    prompt_parts.append("- ang_r_coef: angular velocity penalty coefficient")
+    prompt_parts.append("- acc_r_coef: acceleration penalty coefficient")
+    prompt_parts.append("- acc_change_r_coef: acceleration change penalty coefficient")
+    prompt_parts.append("- act_change_r_coef: action change penalty coefficient")
+    prompt_parts.append("- align_r_coef: heading alignment reward coefficient")
+    prompt_parts.append("- col_vel_r_coef: collision velocity penalty coefficient")
+    prompt_parts.append("- col_dis_r_coef: collision distance penalty coefficient")
+    prompt_parts.append("- share_factor_collision: collision term sharing factor (0-1)")
+    prompt_parts.append("")
+    
+    if current_coefficients:
+        prompt_parts.append("Current coefficient values:")
+        for name, value in current_coefficients.items():
+            prompt_parts.append(f"  {name} = {value}")
+        prompt_parts.append("")
+    
+    if feedback:
+        prompt_parts.append("Feedback from previous attempts:")
+        prompt_parts.append(feedback.strip())
+        prompt_parts.append("")
+    
+    prompt_parts.append(
+        "Output ONLY the coefficient values in JSON format, for example:\n"
+        '{"base_r": 0.1, "vel_r_coef": -0.04, "ang_r_coef": -0.02, ...}\n\n'
+        "Or as a simple list: base_r=0.1, vel_r_coef=-0.04, ang_r_coef=-0.02, ...\n\n"
+        "Do NOT output any code or explanation, only the coefficient values."
+    )
+    
+    return "\n".join(prompt_parts)

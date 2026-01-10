@@ -1,57 +1,167 @@
 env:
-  num_agent_per_scene: 160
-  num_scene: 1
-  max_episode_steps: 256
-  sensor_kwargs: []
+  num_agent_per_scene: 10
+  num_scene: 20
+  max_episode_steps: 768
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_empty"
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_pillar
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_high_low
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_high_low
+    path: VisFly/datasets/visfly-beta/configs/scenes/box30_mix
+#   path: VisFly/datasets/visfly-beta/configs/scenes/box15_wall_median
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty
+  sensor_kwargs:
+    - sensor_type: depth
+      uuid: depth
+      resolution: [12,16]
+      position: [0,0,-0.1]
+
+  random_kwargs:
+    state_generator:
+#       class: Uniform
+#       kwargs:
+#         - position:
+#             mean: [ 30.0, 0.0, 1.5 ]
+#             half: [ 1., 1., 0.5]
+# #            half: [ 5., 5., 1.0 ]
+#           orientation:
+#             mean: [0., 0., 0.]
+#             half: [0., 0., 3.14]
+#          heading: True
+      class: Uniform
+      kwargs:
+#        - randomizers_kwargs:
+#            - class: Uniform
+#              kwargs:
+      - position:
+          mean: [ 2, 0.0, 5.0 ]
+          half: [ 1, 29., 4.0 ]
+        orientation:
+          mean: [ 0., 0., 0. ]
+          half: [ 0.5, 0.5, 0.5 ]
+        velocity:
+          mean: [ 0.5,0.,0.0 ]
+          half: [ 1.,1.,0.3 ]
+        angular_velocity:
+          mean: [ 0.,0.,0. ]
+          half: [ 0.1,0.1,0.1 ]
+#            - class: Uniform
+#              kwargs:
+      - position:
+          mean: [ 58, 0.0, 5.0 ]
+          half: [ 1, 29., 4.0 ]
+        orientation:
+          mean: [ 0., 0., 3.14 ]
+          half: [ 0.5, 0.5, 0.5 ]
+        velocity:
+          mean: [ 0.5,0.,0.0 ]
+          half: [ 1.,1.,0.3 ]
+        angular_velocity:
+          mean: [ 0.,0.,0. ]
+          half: [ 0.1,0.1,0.1 ]
+#            - class: Uniform
+#              kwargs:
+      - position:
+          mean: [ 30, 28, 5.0 ]
+          half: [ 29., 1, 4.0 ]
+        orientation:
+          mean: [ 0., 0., -1.57 ]
+          half: [ 0.5, 0.5, 0.5]
+        velocity:
+          mean: [ 0., -0.5,0.0 ]
+          half: [ 1.,1.,0.3 ]
+        angular_velocity:
+          mean: [ 0.,0.,0. ]
+          half: [ 0.1,0.1,0.1 ]
+#            - class: Uniform
+#              kwargs:
+      - position:
+          mean: [ 30, -28, 5.0 ]
+          half: [ 29., 1, 4.0 ]
+        orientation:
+          mean: [ 0., 0., 1.57 ]
+          half: [ 0.5, 0.5, 0.5]
+        velocity:
+          mean: [ 0., 0.5,0.0 ]
+          half: [ 1.,1.,0.3 ]
+        angular_velocity:
+          mean: [ 0.,0.,0. ]
+          half: [ 0.1,0.1,0.1 ]
   dynamics_kwargs:
     dt: 0.03
     ctrl_dt: 0.03
+    comm_delay: 0.06
+    ctrl_delay: True
     action_type: "bodyrate"
-    ctrl_delay: true
-    cfg: "drone_d435i"
-  visual: true
-  requires_grad: true
-  tensor_output: false
-  device: "cpu"
+
+  visual: True
+  device: cpu
+  requires_grad: True
+  tensor_output: True
+  max_rand_velocity: 10.0
+  is_collision_reset: False
+#  target: [[15,0,1]]
+
+eval_env:
+  num_scene: 1
+  num_agent_per_scene: 5
+  visual: True
+  max_episode_steps: 512
+  tensor_output: True
+  sensor_kwargs:
+    - sensor_type: depth
+      uuid: depth
+      resolution: [ 12,16 ]
+      position: [ 0,0,-0.1 ]
+    - sensor_type: depth
+      uuid: depth2
+      resolution: [ 48,64 ]
+      position: [ 0,0,-0.1 ]
   random_kwargs:
     state_generator:
-      class: "Uniform"
+      class: Uniform
       kwargs:
         - position:
-            mean: [15.0, 0.0, 1.0]
-            half: [10, 10, 0.2]
-  target: [15.0, 0.0, 1.5]
+#            mean: [ 2.0, 0.0, 5 ]
+            half: [ 0.1, 20., 0.1 ]
+            mean: [ 1.2, 0.0, 2 ]
+#            half: [ 0., 5., 0.2 ]
+#            half: [ 0., 25., 0.2 ]
+          orientation:
+            mean: [0., 0., 0.]
+            half: [0., 0., 1.0]
+#          heading: True
+          test: True
+          xyz_num: [1,5,1]
 
-# Evaluation environment configuration
-eval_env:
-  num_agent_per_scene: 1
-  max_episode_steps: 256
-  visual: true
-  tensor_output: false
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_empty"
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_empty
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_test
+    path: VisFly/datasets/visfly-beta/configs/scenes/box30_0.04tree
+    shuffle: False
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_0.02tree
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_tree
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_high_test
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box15_wall_median
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box15_wall_simple_pillars
     render_settings:
       mode: fix
-      view: custom
-      resolution: [1080, 1920]
-      position: [[7.0, 6.8, 5.5], [7.0, 4.8, 4.5]]
-      line_width: 6.0
-      trajectory: true
-  dynamics_kwargs:
-    dt: 0.03
-    ctrl_dt: 0.03
-    action_type: "bodyrate"
-    ctrl_delay: true
-    cfg: "drone_d435i"
-  requires_grad: false
-  device: "cpu"
-  random_kwargs:
-    state_generator:
-      class: "Uniform"
-      kwargs:
-        - position:
-            mean: [15.0, 0.0, 1.0]
-            half: [10, 10, 0.2]
-  target: [15.0, 0.0, 1.5]
+#      view: custom
+#      position: [[-2., 3, 5.5], [-2, 0, 4.5]]
+      resolution: [1080,1080]
+      view: top
+      position: [[30, 0, 35.5]]
+      trajectory: True
+      FOV: False
+      collision: True
+      approaching: True
+      axes: True
+#  target: [[3,1,0],[3,-1.,0],[3,2,0],[3,0,0],[3,-2,0]]
+#  target: [[10,0,0]]
+  max_rand_velocity: 9.0
+  pos_target: [[56,-20,2],[56,-10,2],[56,0,2],[56,10,2],[56,20,2]]
+#  pos_target: [[56,-24,5],[56,-12,5],[56,0,5],[56,12,5],[56,24,5]]
+#  target: [[5,0,0]]
+#  target: [[6,0,0]]
+
+#  target: [[26,-12,1.5],[26,-6,1.5],[26,0,1.5],[26,6,1.5],[26,12,1.5]]

@@ -1,3 +1,2 @@
-"""
-VisFly-Eureka test suite.
-"""
+"""Tests for VisFly-Eureka"""
+

@@ -5,12 +5,15 @@ This module provides functionality to directly inject LLM-generated reward funct
 into existing VisFly environment instances without wrapper layers.
 """
 
+import ast
+import logging
+import textwrap
+import time
 import torch
 import types
-import logging
-import ast
-import time
 from typing import Any, Dict, Optional, Callable
+
+from ..constants import MAX_REASONABLE_REWARD_TENSOR_SIZE
 
 
 def inject_generated_reward(env_instance: Any, reward_code: str) -> bool:
@@ -178,70 +181,54 @@ def _test_injected_reward(
     """
     logger = logging.getLogger(__name__)
 
+    def _restore_original():
+        if original_get_reward is None:
+            return
+        try:
+            env_instance.get_reward = original_get_reward
+            logger.info("Restored original reward function after validation failure")
+        except Exception as restore_error:
+            logger.error(
+                f"Failed to restore original reward function: {restore_error}"
+            )
+
     try:
-        # Try multiple times in case of transient issues
-        for attempt in range(3):
-            try:
-                # Reset environment to get valid state
-                env_instance.reset()
-
-                # Call the reward function
-                reward = env_instance.get_reward()
-
-                # Validate reward output
-                if not isinstance(reward, torch.Tensor):
-                    logger.error(
-                        f"Reward function returned {type(reward)}, expected torch.Tensor"
-                    )
-                    continue
-
-                # Check reward shape is reasonable (allow flexibility for different batch sizes)
-                if reward.dim() > 2 or reward.numel() == 0:
-                    logger.error(f"Invalid reward shape: {reward.shape}")
-                    continue
-
-                # Check for valid values (no NaN or infinite values)
-                if torch.isnan(reward).any() or torch.isinf(reward).any():
-                    logger.error("Reward function returned NaN or infinite values")
-                    continue
-
-                # Additional sanity checks  
-                from ..constants import MAX_REASONABLE_REWARD_TENSOR_SIZE
-                if reward.numel() > MAX_REASONABLE_REWARD_TENSOR_SIZE:  # Suspiciously large reward tensor
-                    logger.warning(f"Large reward tensor: {reward.shape}")
-
-                # Check if reward values are reasonable (not extremely large)
-                if torch.abs(reward).max() > 1e6:
-                    logger.warning(
-                        f"Very large reward values detected: max={torch.abs(reward).max()}"
-                    )
-
-                logger.debug(
-                    f"Reward function test passed: shape={reward.shape}, range=[{reward.min():.3f}, {reward.max():.3f}]"
-                )
-                return True
-
-            except Exception as e:
-                logger.warning(f"Reward test attempt {attempt + 1} failed: {e}")
-                if attempt == 2:  # Last attempt
-                    raise
-
+        env_instance.reset()
+        reward = env_instance.get_reward()
+    except Exception as exc:
+        logger.error(f"Injected reward evaluation failed: {exc}")
+        _restore_original()
         return False
 
-    except Exception as e:
-        logger.error(f"Reward function test failed after all attempts: {e}")
-
-        # Restore original if test fails
-        if original_get_reward:
-            try:
-                env_instance.get_reward = original_get_reward
-                logger.info("Restored original reward function after test failure")
-            except Exception as restore_error:
-                logger.error(
-                    f"Failed to restore original reward function: {restore_error}"
-                )
-
+    if not isinstance(reward, torch.Tensor):
+        logger.error(
+            f"Reward function returned {type(reward)}, expected torch.Tensor"
+        )
+        _restore_original()
         return False
+
+    if reward.dim() > 2 or reward.numel() == 0:
+        logger.error(f"Invalid reward shape: {reward.shape}")
+        _restore_original()
+        return False
+
+    if torch.isnan(reward).any() or torch.isinf(reward).any():
+        logger.error("Reward function returned NaN or infinite values")
+        _restore_original()
+        return False
+
+    if reward.numel() > MAX_REASONABLE_REWARD_TENSOR_SIZE:
+        logger.warning(f"Large reward tensor: {reward.shape}")
+
+    if torch.abs(reward).max() > 1e6:
+        logger.warning(
+            f"Very large reward values detected: max={torch.abs(reward).max()}"
+        )
+
+    logger.debug(
+        f"Reward function test passed: shape={reward.shape}, range=[{reward.min():.3f}, {reward.max():.3f}]"
+    )
+    return True
 
 
 def extract_reward_function(llm_response: str) -> Optional[str]:
@@ -257,12 +244,25 @@ def extract_reward_function(llm_response: str) -> Optional[str]:
     logger = logging.getLogger(__name__)
 
     try:
-        lines = llm_response.strip().split("\n")
+        # Remove thinking/reasoning tags if present
+        # Minimax uses <think>...</think> tags
+        # Other models may use <think>...</think> or similar
+        # This ensures we don't accidentally include thinking content in extracted code
+        import re
+        cleaned_response = llm_response
+        # Remove <think> tags (Minimax)
+        cleaned_response = re.sub(r'<think>.*?</think>', '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
+        # Remove <think> tags (various formats)
+        cleaned_response = re.sub(r'<think>.*?</think>', '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
+        cleaned_response = re.sub(r'<think>.*?</think>', '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
+        
+        lines = cleaned_response.strip().split("\n")
         func_start = None
 
         # Find the start of the get_reward function
+        # Match any get_reward signature: get_reward(self), get_reward(self, predicted_obs=None), etc.
         for i, line in enumerate(lines):
-            if line.strip().startswith("def get_reward(self)"):
+            if line.strip().startswith("def get_reward(self"):
                 func_start = i
                 break
 
@@ -289,6 +289,15 @@ def extract_reward_function(llm_response: str) -> Optional[str]:
                 func_lines.append(line)
 
         extracted_code = "\n".join(func_lines)
+        # Normalize indentation so the function is valid at module scope
+        extracted_code = textwrap.dedent(extracted_code).lstrip()
+        if not extracted_code.endswith("\n"):
+            extracted_code += "\n"
+
+        if not extracted_code.startswith("def get_reward(self"):
+            logger.error("Extracted reward function does not start with the expected signature")
+            return None
+
         logger.debug(f"Extracted reward function:\n{extracted_code}")
 
         return extracted_code
@@ -298,102 +307,29 @@ def extract_reward_function(llm_response: str) -> Optional[str]:
         return None
 
 
-def create_fallback_reward(env_instance: Any) -> str:
-    """
-    Create a basic fallback reward function for the given environment.
-
-    Args:
-        env_instance: VisFly environment instance
-
-    Returns:
-        str: Fallback reward function code
-    """
-    # Determine environment type and create appropriate fallback
-    env_name = env_instance.__class__.__name__
-
-    if "Navigation" in env_name:
-        return """
-def get_reward(self):
-    \"\"\"Fallback reward for navigation tasks\"\"\"
-    if hasattr(self, 'target') and hasattr(self, 'position'):
-        # Simple distance-based reward
-        distance_to_target = torch.norm(self.position - self.target, dim=1)
-        return -distance_to_target * 0.1
-    else:
-        # Default survival reward
-        return torch.ones(getattr(self, 'num_agent', 1)) * 0.01
-"""
-    elif "Racing" in env_name:
-        return """
-def get_reward(self):
-    \"\"\"Fallback reward for racing tasks\"\"\"
-    if hasattr(self, 'velocity'):
-        # Reward forward movement
-        return torch.norm(self.velocity, dim=1) * 0.1
-    else:
-        return torch.ones(getattr(self, 'num_agent', 1)) * 0.01
-"""
-    elif "Hover" in env_name:
-        return """
-def get_reward(self):
-    \"\"\"Fallback reward for hovering tasks\"\"\"
-    if hasattr(self, 'velocity'):
-        # Reward staying still
-        return -torch.norm(self.velocity, dim=1) * 0.1
-    else:
-        return torch.ones(getattr(self, 'num_agent', 1)) * 0.01
-"""
-    else:
-        # Generic fallback
-        return """
-def get_reward(self):
-    \"\"\"Generic fallback reward\"\"\"
-    return torch.ones(getattr(self, 'num_agent', 1)) * 0.01
-"""
-
-
 def safe_reward_injection(env_instance: Any, reward_code: str) -> bool:
     """
-    Safely inject reward function with comprehensive error handling.
+    Attempt to inject reward function into environment.
 
-    This function attempts reward injection and falls back to a safe default
-    if the injection fails at any point.
+    This function attempts reward injection and returns success status.
+    No fallback mechanism - if injection fails, return False and let
+    training naturally fail (which the pipeline will detect and mark as failed).
 
     Args:
         env_instance: VisFly environment instance
         reward_code: Reward function code to inject
 
     Returns:
-        bool: True if any valid reward function is active (original or fallback)
+        bool: True if injection succeeded, False otherwise
     """
     logger = logging.getLogger(__name__)
 
-    # Store the original reward function
-    original_get_reward = getattr(env_instance, "get_reward", None)
-
-    # Try to inject the generated reward function
     if inject_generated_reward(env_instance, reward_code):
         logger.info("Successfully injected generated reward function")
         return True
 
-    # If injection failed, try fallback reward
-    logger.warning("Generated reward injection failed, trying fallback reward")
-
-    try:
-        fallback_code = create_fallback_reward(env_instance)
-        if inject_generated_reward(env_instance, fallback_code):
-            logger.info("Successfully injected fallback reward function")
-            return True
-    except Exception as e:
-        logger.error(f"Fallback reward injection failed: {e}")
-
-    # If everything failed, ensure original reward is restored
-    if original_get_reward:
-        env_instance.get_reward = original_get_reward
-        logger.info("Restored original reward function")
-        return True
-
-    logger.error("No valid reward function available")
+    # Injection failed - return False and let training fail naturally
+    logger.warning("Reward function injection failed - training will likely fail")
     return False
 
 
@@ -417,7 +353,7 @@ class RewardInjector:
             reward_code: Reward function code to inject
 
         Returns:
-            bool: True if injection succeeded
+            bool: True if injection succeeded, False otherwise
         """
         success = safe_reward_injection(env_instance, reward_code)
 
@@ -432,16 +368,6 @@ class RewardInjector:
         )
 
         return success
-
-    @staticmethod
-    def get_injection_history():
-        """Get history of all reward injection attempts."""
-        return RewardInjector.injection_history.copy()
-
-    @staticmethod
-    def clear_history():
-        """Clear injection history."""
-        RewardInjector.injection_history.clear()
 
 
 # Convenience function matching the specification

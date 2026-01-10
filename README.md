@@ -7,7 +7,7 @@ QuadroLLM integrates VisFly (visual-based quadrotor simulator) with Eureka-style
 ## 🚀 Key Features
 
 ### Core Capabilities
-- **🧠 LLM-Powered Optimization**: Uses GPT-4o/GLM-4.5 for intelligent reward function generation
+- **🧠 LLM-Powered Optimization**: Uses GPT-4o/GLM-4.6 for intelligent reward function generation
 - **🔄 Iterative Refinement**: Automatically improves reward functions based on training performance and TensorBoard feedback
 - **⚡ Parallel Evaluation**: Multi-GPU training with intelligent resource allocation and load balancing  
 - **📊 Comprehensive Analytics**: TensorBoard integration with DataFrame analysis for data-driven optimization
@@ -87,7 +87,7 @@ Set up your LLM API credentials:
 export OPENAI_API_KEY="your-openai-api-key"
 export LLM_BASE_URL="https://api.openai.com/v1"
 
-# Option 2: For custom providers (e.g., GLM-4.5)
+# Option 2: For custom providers (e.g., GLM-4.6)
 export OPENAI_API_KEY="your-glm-api-key" 
 export LLM_BASE_URL="https://open.bigmodel.cn/api/paas/v4/"
 ```
@@ -204,8 +204,8 @@ temperature: 0.7
 max_tokens: 4000
 batching_strategy: n_parameter
 
-# glm-4.5.yaml
-model: glm-4.5
+# glm-4.6.yaml
+model: glm-4.6
 api_key: ${oc.env:OPENAI_API_KEY}
 base_url: https://open.bigmodel.cn/api/paas/v4/
 batching_strategy: sequential
@@ -538,7 +538,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - **VisFly Development Team**: For creating the outstanding visual-based quadrotor simulation framework
-- **OpenAI & BigModel Teams**: For providing powerful LLM APIs (GPT-4o, GLM-4.5)
+- **OpenAI & BigModel Teams**: For providing powerful LLM APIs (GPT-4o, GLM-4.6)
 - **Original Eureka Authors** (Ma et al.): For pioneering LLM-powered reward optimization methodology  
 - **Hydra Team**: For the excellent configuration management framework
 - **PyTorch Community**: For the foundation enabling differentiable simulation

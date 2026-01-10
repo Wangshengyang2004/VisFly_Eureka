@@ -1,8 +1,8 @@
 """
-Quadro-LLM: LLM-powered reward optimization for autonomous drone navigation.
+Quadro-LLM: LLM-powered reward optimization for autonomous drone control.
 
 A modular system that combines VisFly drone simulation with LLM-generated
-reward functions for autonomous navigation tasks.
+reward functions for diverse autonomous flight tasks.
 """
 
 from .core.models import (

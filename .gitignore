@@ -1,8 +1,11 @@
-# VisFly Directory - External dependency, not part of this project
-VisFly/
+# VisFly Directory - Now a git submodule (beta branch)
+# VisFly/  # Commented out - VisFly is now a submodule
 
 # Backup/Reference directories
 backup/Eureka/
+
+# Documentation files (local notes, not for version control)
+CLAUDE.md
 
 # Python
 __pycache__/
@@ -175,3 +178,5 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 ENVIRONMENT_ALGORITHM_COMPATIBILITY.md
+
+*.png

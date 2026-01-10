@@ -7,7 +7,7 @@ env:
       resolution: [64, 64]
       position: [0, 0.2, 0.0]
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/garage_racing"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/garage_racing"
   dynamics_kwargs:
     dt: 0.015  # Higher frequency for precise racing control
     ctrl_dt: 0.015
@@ -27,7 +27,7 @@ eval_env:
   visual: true
   tensor_output: true
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/garage_racing"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/garage_racing"
     render_settings:
       mode: fix
       view: custom

@@ -28,8 +28,8 @@ sys.path.append(str(PROJECT_ROOT / "VisFly"))
 
 from VisFly.utils.common import load_yaml_config
 
-from algorithms.BPTT import BPTT
-from algorithms.SHAC import SHAC
+from algorithms.BPTT_series.BPTT import BPTT
+from algorithms.BPTT_series.SHAC import SHAC
 from VisFly.utils.algorithms.PPO import PPO
 
 ENV_SPECS = {
@@ -123,12 +123,49 @@ def apply_config_overrides(
     return env_cfg, alg_cfg
 
 
-def create_environment(env_name: str, env_config: Dict[str, Any], training: bool) -> Any:
-    env_cls = resolve_env_class(env_name)
-    key = "env" if training else "eval_env"
+def get_env_class_registry() -> Dict[str, Any]:
+    """Return env-name -> env-class registry (primarily for tests/mocking)."""
+    return {name: resolve_env_class(name) for name in ENV_SPECS}
+
+
+def create_environment(
+    env_name: str,
+    env_config: Dict[str, Any],
+    training: Optional[bool] = None,
+    *,
+    is_training: Optional[bool] = None,
+) -> Any:
+    """
+    Create an environment instance.
+
+    Supports the legacy `is_training` keyword used by older tests.
+    """
+    training_mode = is_training if is_training is not None else bool(training)
+    env_cls = get_env_class_registry()[env_name]
+    key = "env" if training_mode else "eval_env"
     kwargs = dict(env_config[key])
     kwargs.pop("name", None)
-    return env_cls(**kwargs)
+
+    # Filter kwargs that are not accepted by the constructor; attach them afterwards.
+    import inspect
+
+    signature = inspect.signature(env_cls)
+    accepted = set(signature.parameters.keys())
+    filtered_out: Dict[str, Any] = {}
+    ctor_kwargs: Dict[str, Any] = {}
+    for k, v in kwargs.items():
+        if k in accepted:
+            ctor_kwargs[k] = v
+        else:
+            filtered_out[k] = v
+
+    env = env_cls(**ctor_kwargs)
+    for k, v in filtered_out.items():
+        # Enforce compatibility: if tensor_output is False, requires_grad must be False
+        if k == 'requires_grad' and not env.tensor_output and v:
+            v = False
+        setattr(env, k, v)
+    return env
 
 
 def inject_reward_function(reward_path: Optional[str], env_name: str) -> None:
@@ -158,7 +195,6 @@ def create_algorithm(
     comment = alg_config.get("comment")
 
     if algorithm == "ppo":
-        env.tensor_output = False  # Stable Baselines expects numpy outputs
         return algo_cls(env=env, comment=comment, tensorboard_log=str(save_dir), **algo_kwargs)
 
     return algo_cls(env=env, comment=comment, save_path=str(save_dir), **algo_kwargs)
@@ -202,8 +238,8 @@ def done_to_bool(done: Any) -> bool:
 def snapshot_env(env: Any) -> Dict[str, np.ndarray]:
     def to_numpy(value: Any) -> np.ndarray:
         if isinstance(value, th.Tensor):
-            return value.detach().cpu().numpy()
-        return np.asarray(value)
+            return value.detach().cpu().numpy().copy()
+        return np.array(value, copy=True)
 
     return {
         "position": to_numpy(env.position),
@@ -212,6 +248,39 @@ def snapshot_env(env: Any) -> Dict[str, np.ndarray]:
         "angular_velocity": to_numpy(env.angular_velocity),
         "target": to_numpy(getattr(env, "target", np.zeros(3))),
     }
+
+
+# --- Backwards-compatible helpers expected by tests/unit/test_run_enhancements.py ---
+
+def collect_trajectory_data(env: Any, obs: Any = None) -> Dict[str, np.ndarray]:
+    """Legacy name for snapshotting environment state."""
+    _ = obs
+    return snapshot_env(env)
+
+
+def create_trajectory_plot(
+    trajectory: List[Dict[str, np.ndarray]], output_dir: Path, episode_idx: int = 0
+) -> None:
+    """Legacy name for trajectory plotting."""
+    return plot_trajectory(trajectory, output_dir, episode_idx)
+
+
+def record_video_frame(env: Any, video_writer: Any, video_params: Optional[Dict[str, Any]]) -> Any:
+    """
+    Legacy name for video recording that tolerates missing OpenCV.
+    """
+    if video_params is None:
+        return video_writer
+    if cv2 is None:
+        return None
+
+    # Older callers used 'init' sentinel.
+    if video_writer == "init":
+        video_writer = None
+
+    path = Path(video_params["path"])
+    fps = int(video_params.get("fps", 30))
+    return record_frame(env, video_writer, path, fps)
 
 
 def plot_trajectory(trajectory: List[Dict[str, np.ndarray]], output: Path, episode_idx: int) -> None:
@@ -278,7 +347,7 @@ def ensure_video_writer(writer: Optional[cv2.VideoWriter], frame: np.ndarray, pa
     if writer is not None:
         return writer
     height, width = frame.shape[:2]
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(str(path), fourcc, fps, (width, height))
     if not writer.isOpened():
         raise RuntimeError(f"Failed to open video writer at {path}")
@@ -459,6 +528,15 @@ def train(args: argparse.Namespace) -> bool:
     train_dir = ensure_directory(PROJECT_ROOT / "results" / "training" / args.env)
     train_env = create_environment(args.env, env_config, training=True)
 
+    # BPTT requires tensor_output=True and requires_grad=True for analytical gradient RL
+    # Other algorithms use numpy outputs
+    if args.algorithm == "bptt" or args.algorithm == "shac":
+        train_env.tensor_output = True
+        train_env.requires_grad = True
+    else:
+        train_env.tensor_output = False
+        train_env.requires_grad = False
+
     inject_reward_function(args.reward_function_path, args.env)
 
     model = create_algorithm(args.algorithm, alg_config, train_env, train_dir)
@@ -469,7 +547,11 @@ def train(args: argparse.Namespace) -> bool:
         total_timesteps = int(learn_cfg.get("total_timesteps", 0))
         model.learn(total_timesteps=total_timesteps)
     else:
-        model.learn(**learn_cfg)
+        # Filter learn_cfg to only include parameters accepted by learn() method
+        # BPTT.learn() accepts: total_timesteps, callback, log_interval, tb_log_name, reset_num_timesteps, progress_bar
+        valid_learn_params = {'total_timesteps', 'callback', 'log_interval', 'tb_log_name', 'reset_num_timesteps', 'progress_bar'}
+        filtered_learn_cfg = {k: v for k, v in learn_cfg.items() if k in valid_learn_params}
+        model.learn(**filtered_learn_cfg)
 
     model.save()
     LOGGER.info("Training completed and model saved.")

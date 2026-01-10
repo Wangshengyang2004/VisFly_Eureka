@@ -83,31 +83,56 @@ class SubprocessRewardEvaluator:
             return self._make_json_serializable(obj.__dict__)
         else:
             return obj
-    
-    # Removed embedded script creation in favor of standalone evaluation_worker.py
-    
+
+    def _create_failed_result(
+        self,
+        reward_code: str,
+        identifier: str,
+        error: str,
+        log_dir: Optional[str] = None
+    ) -> RewardFunctionResult:
+        """Create a failed RewardFunctionResult with standard error values."""
+        return RewardFunctionResult(
+            reward_code=reward_code,
+            identifier=identifier,
+            training_successful=False,
+            success_rate=-1.0,
+            episode_length=0.0,
+            training_time=0.0,
+            final_reward=0.0,
+            convergence_step=0,
+            error_message=error,
+            log_dir=log_dir,
+            peak_memory_mb=0.0,
+        )
+
     def evaluate_reward_function(
-        self, 
-        reward_code: str, 
+        self,
+        reward_code: str,
         identifier: str,
         env_config: Dict[str, Any],
         optimization_config: Dict[str, Any],
         env_class_path: str = "VisFly.envs.NavigationEnv.NavigationEnv",
-        timeout: int = 1800,  # 30 minutes
         base_output_dir: Optional[str] = None,
         eval_env_config: Optional[Dict[str, Any]] = None
     ) -> RewardFunctionResult:
         """
         Evaluate a reward function in a subprocess using simplified approach.
         """
-        
+
+        # Initialize variables early to avoid locals() checks
+        stdout_file = None
+        stderr_file = None
+
         # Create configuration file for subprocess
         config_file = self.temp_dir / f"{identifier}_config.json"
         output_file = self.temp_dir / f"{identifier}_result.json"
-        
+
         # Convert torch tensors to lists for JSON serialization
         serializable_env_config = self._make_json_serializable(env_config)
-        
+        allocated_device: Optional[str] = None
+        peak_memory_mb = 0.0
+
         # Determine iteration folder; prefer explicit field in optimization_config
         iteration_value = optimization_config.get('iteration')
         if iteration_value is None:
@@ -144,15 +169,21 @@ class SubprocessRewardEvaluator:
         
         try:
             # Load algorithm config to determine GPU requirements
-            algorithm = optimization_config.get("algorithm", "bptt").lower()
+            if "algorithm" not in optimization_config:
+                raise ValueError("Algorithm must be specified in optimization_config")
+            algorithm = optimization_config["algorithm"].lower()
             env_name = env_class_path.split('.')[-2].lower().replace('env', '')
             alg_cfg_path = project_root / "configs" / "algs" / env_name / f"{algorithm}.yaml"
-            
+
             import yaml
             with open(alg_cfg_path, 'r') as f:
                 alg_cfg = yaml.safe_load(f)
-            alg_params = alg_cfg.get("algorithm", {})
-            alg_device = alg_params.get("device", "cpu")
+            if "algorithm" not in alg_cfg:
+                raise ValueError(f"Algorithm config missing 'algorithm' section in {alg_cfg_path}")
+            alg_params = alg_cfg["algorithm"]
+            if "device" not in alg_params:
+                raise ValueError(f"Device must be specified in algorithm config for {algorithm} in {alg_cfg_path}")
+            alg_device = alg_params["device"]
             
             # Run subprocess
             self.logger.debug(f"Starting subprocess for {identifier}")
@@ -174,10 +205,12 @@ class SubprocessRewardEvaluator:
             if alg_device != "cpu":
                 allocated_device = self.gpu_allocator.allocate_gpu_with_queue(
                     job_id=identifier,
-                    memory_requirement_mb=8000,  # Estimate for BPTT training
-                    allow_cpu_fallback=True
+                    memory_requirement_mb=optimization_config.get(
+                        "gpu_memory_requirement_mb", 2048
+                    ),
+                    allow_cpu_fallback=True,
                 )
-                
+
                 if allocated_device and allocated_device.startswith("cuda:"):
                     gpu_id = allocated_device.split(":")[1]
                     subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_id
@@ -224,15 +257,23 @@ class SubprocessRewardEvaluator:
                     for line in iter(pipe.readline, ''):
                         file_handle.write(line)
                         file_handle.flush()
-                        # Selective logging: escalate errors, keep training start/complete at DEBUG to reduce noise
+                        # Selective logging: escalate errors, surface training boundaries, ignore noisy metrics
                         line_stripped = line.strip()
                         upper = line_stripped.upper()
-                        if any(k in upper for k in ['ERROR', 'FAILED']):
+                        if any(k in upper for k in ["ERROR", "FAILED"]):
                             self.logger.error(f"[{identifier}] {line_stripped}")
-                        elif 'SUCCESS' in upper:
+                        elif (
+                            'STARTING TRAINING' in upper
+                            or 'TRAINING COMPLETED' in upper
+                            or 'EVALUATION COMPLETED' in upper
+                        ):
                             self.logger.info(f"[{identifier}] {line_stripped}")
-                        elif 'TRAINING COMPLETED' in upper or 'STARTING TRAINING' in upper or 'EVALUATION COMPLETED' in upper:
-                            self.logger.debug(f"[{identifier}] {line_stripped}")
+                        elif (
+                            'SUCCESS' in upper
+                            and 'SUCCESS_RATE' not in upper
+                            and 'SUCCESS RATE' not in upper
+                        ):
+                            self.logger.info(f"[{identifier}] {line_stripped}")
                         
                         # Periodic heartbeat to show progress
                         current_time = time_module.time()
@@ -257,14 +298,7 @@ class SubprocessRewardEvaluator:
                 
                 # Wait for process completion
                 try:
-                    exit_code = process.wait(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    self.logger.warning(f"Evaluation timeout for {identifier}")
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except Exception:
-                        process.kill()
-                    exit_code = -1
+                    exit_code = process.wait()
                 finally:
                     stdout_thread.join(timeout=5)
                     stderr_thread.join(timeout=5)
@@ -286,23 +320,16 @@ class SubprocessRewardEvaluator:
                     detail += "\nStdout was empty; process may have failed before training initialization (check stderr tail)."
                 if err_tail:
                     detail += f"\n--- stderr tail ---\n{err_tail}"
-                return RewardFunctionResult(
-                    reward_code=reward_code,
-                    identifier=identifier,
-                    training_successful=False,
-                    success_rate=-1.0,
-                    episode_length=0.0,
-                    training_time=0.0,
-                    final_reward=0.0,
-                    convergence_step=0,
-                    error_message=detail,
-                    log_dir=str(eval_output_dir),
-                    peak_memory_mb=0.0
-                )
+                return self._create_failed_result(reward_code, identifier, detail, str(eval_output_dir))
             
             # Load result
-            with open(output_file, 'r') as f:
-                result_data = json.load(f)
+            try:
+                with open(output_file, 'r') as f:
+                    result_data = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                detail = f"Failed to parse output file: {e}\nFile: {output_file}"
+                self.logger.error(detail)
+                return self._create_failed_result(reward_code, identifier, detail, str(eval_output_dir))
             
             # Persist raw result for debugging
             try:
@@ -323,7 +350,8 @@ class SubprocessRewardEvaluator:
                 log_dir_path = find_tensorboard_logdir(str(eval_output_dir))
                 if not log_dir_path:
                     log_dir_path = str(eval_output_dir)  # Fallback to output dir
-                
+                peak_memory_mb = result_data.get('peak_memory_mb', 0.0)
+
                 return RewardFunctionResult(
                     reward_code=result_data['reward_code'],
                     identifier=result_data['identifier'],
@@ -334,7 +362,7 @@ class SubprocessRewardEvaluator:
                     final_reward=result_data['final_reward'],
                     convergence_step=result_data['convergence_step'],
                     log_dir=log_dir_path,
-                    peak_memory_mb=result_data.get('peak_memory_mb', 0.0),
+                    peak_memory_mb=peak_memory_mb,
                     evaluation_summary=result_data.get('aggregate_statistics')
                     or result_data.get('evaluation_summary'),
                     episode_statistics=result_data.get('episode_statistics', []),
@@ -358,53 +386,28 @@ class SubprocessRewardEvaluator:
                 except Exception:
                     pass
 
-                return RewardFunctionResult(
-                    reward_code=reward_code,
-                    identifier=identifier,
-                    training_successful=False,
-                    success_rate=-1.0,
-                    episode_length=0.0,
-                    training_time=0.0,
-                    final_reward=0.0,
-                    convergence_step=0,
-                    error_message=detail,
-                    log_dir=str(eval_output_dir),
-                    peak_memory_mb=0.0
-                )
+                peak_memory_mb = result_data.get('peak_memory_mb', 0.0)
+
+                return self._create_failed_result(reward_code, identifier, detail, str(eval_output_dir))
                 
         except Exception as e:
             self.logger.error(f"Subprocess evaluation failed for {identifier}: {e}")
             # Try to attach stderr tail if available
             try:
-                err_tail = self._read_tail(stderr_file) if 'stderr_file' in locals() else ""
+                err_tail = self._read_tail(stderr_file) if stderr_file else ""
                 detail = f"{e}\n--- stderr tail ---\n{err_tail}" if err_tail else str(e)
             except Exception:
                 detail = str(e)
-            return RewardFunctionResult(
-                reward_code=reward_code,
-                identifier=identifier,
-                training_successful=False,
-                success_rate=-1.0,
-                episode_length=0.0,
-                training_time=0.0,
-                final_reward=0.0,
-                convergence_step=0,
-                error_message=detail,
-                log_dir=str(eval_output_dir) if 'eval_output_dir' in locals() else None,
-                peak_memory_mb=0.0
+            return self._create_failed_result(
+                reward_code, identifier, detail,
+                str(eval_output_dir) if eval_output_dir else None
             )
             
         finally:
             # Release GPU allocation if it was allocated
             try:
-                # Try to get peak memory from result if available
-                peak_memory = 0.0
-                if 'result' in locals() and hasattr(result, 'peak_memory_mb'):
-                    peak_memory = result.peak_memory_mb
-                elif 'result_data' in locals() and isinstance(result_data, dict):
-                    peak_memory = result_data.get('peak_memory_mb', 0.0)
-                
-                self.gpu_allocator.release_gpu(identifier, peak_memory)
+                if allocated_device is not None:
+                    self.gpu_allocator.release_gpu(identifier, peak_memory_mb)
             except Exception as e:
                 self.logger.debug(f"GPU cleanup failed for {identifier}: {e}")
             
@@ -427,7 +430,6 @@ class SubprocessRewardEvaluator:
         optimization_config: Dict[str, Any],
         env_class_path: str = "VisFly.envs.NavigationEnv.NavigationEnv",
         max_concurrent: int = 4,
-        timeout: int = 1800,
         base_output_dir: Optional[str] = None,
         eval_env_config: Optional[Dict[str, Any]] = None
     ) -> List[RewardFunctionResult]:
@@ -439,21 +441,24 @@ class SubprocessRewardEvaluator:
         results_map: dict[int, RewardFunctionResult] = {}
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
-            # Submit all evaluation tasks
-            future_to_idx = {
-                executor.submit(
-                    self.evaluate_reward_function,
+            future_to_idx: Dict[concurrent.futures.Future, int] = {}
+            for i in range(len(reward_functions)):
+                submit_args = (
                     reward_functions[i],
                     identifiers[i],
                     env_config,
                     optimization_config,
                     env_class_path,
-                    timeout,
-                    base_output_dir,
-                    eval_env_config
-                ): i
-                for i in range(len(reward_functions))
-            }
+                )
+                submit_kwargs = {
+                    "base_output_dir": base_output_dir,
+                    "eval_env_config": eval_env_config,
+                }
+
+                future = executor.submit(
+                    self.evaluate_reward_function, *submit_args, **submit_kwargs
+                )
+                future_to_idx[future] = i
             
             # Collect results then order by index
             for future in concurrent.futures.as_completed(future_to_idx):

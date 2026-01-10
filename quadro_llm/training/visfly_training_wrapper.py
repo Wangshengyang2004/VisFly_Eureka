@@ -7,16 +7,20 @@ following the obj_track project pattern. Supports BPTT, PPO, and SHAC algorithms
 with clean configuration management.
 """
 
+from __future__ import annotations
+
 import sys
 import os
 import time
 import logging
+import importlib
 import torch
 import torch as th
 import numpy as np
 import argparse
 import yaml
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 # Add VisFly to path dynamically based on current file location
 current_dir = Path(__file__).resolve().parent
@@ -37,6 +41,75 @@ logger = logging.getLogger(__name__)
 
 # Disable gradient anomaly detection for physics-based algorithms
 torch.autograd.set_detect_anomaly(False)
+
+
+# Backwards-compatible symbols expected by the unit test suite.
+from quadro_llm.core.model_evaluation import ModelEvaluator as Evaluator
+from quadro_llm.core.reward_injector import RewardInjector
+
+
+class VisFlyTrainingWrapper:
+    """
+    Minimal training wrapper used by tests and higher-level orchestration.
+
+    The production pipeline uses subprocess evaluation; this wrapper provides a
+    simpler in-process adapter for unit tests.
+    """
+
+    def __init__(self, environment: str, algorithm: str, config: Dict[str, Any]):
+        self.environment = environment
+        self.algorithm_name = algorithm
+        self.algorithm = algorithm  # Backwards compatible attribute name (tests use wrapper.algorithm == "bptt")
+        self.config = config
+
+        self.env: Optional[Any] = None
+        self.algorithm_instance: Optional[Any] = None
+
+    def _create_environment(self) -> Any:
+        module = importlib.import_module(f"VisFly.envs.{self.environment.capitalize()}Env")
+        env_cls = getattr(module, f"{self.environment.capitalize()}Env")
+        env_kwargs = dict(self.config.get("env", {}))
+        self.env = env_cls(**env_kwargs)
+        return self.env
+
+    def _create_algorithm(self) -> Any:
+        if self.env is None:
+            raise RuntimeError("Environment must be created before algorithm.")
+        algo_cfg = dict(self.config.get("algorithm", {}))
+        if self.algorithm_name == "bptt":
+            algo = BPTT(env=self.env, **algo_cfg)
+        elif self.algorithm_name == "ppo":
+            algo = PPO(env=self.env, **algo_cfg)
+        elif self.algorithm_name == "shac":
+            algo = SHAC(env=self.env, **algo_cfg)
+        else:
+            raise ValueError(f"Unknown algorithm: {self.algorithm_name}")
+        self.algorithm_instance = algo
+        return algo
+
+    def inject_reward_function(self, reward_code: str) -> bool:
+        if self.env is None:
+            raise RuntimeError("Environment must be created before reward injection.")
+        injector = RewardInjector()
+        return bool(injector.inject_reward_function(self.env, reward_code, validate=True))
+
+    def train(self, total_timesteps: int) -> Dict[str, Any]:
+        if self.env is None:
+            raise RuntimeError("Environment must be created before training.")
+        if self.algorithm_instance is None:
+            # Allow tests to set wrapper.algorithm directly to a mock
+            self.algorithm_instance = self.algorithm if not isinstance(self.algorithm, str) else self._create_algorithm()
+
+        start = time.time()
+        # Unit tests mock this `.learn(total_timesteps=...)` call.
+        self.algorithm_instance.learn(total_timesteps=total_timesteps)
+        training_time = time.time() - start
+
+        evaluator = Evaluator(self.env, episodes=int(self.config.get("evaluation_episodes", 1)))
+        metrics = evaluator.evaluate(self.algorithm_instance)
+        metrics = dict(metrics) if isinstance(metrics, dict) else {}
+        metrics["training_time"] = training_time
+        return metrics
 
 
 def parse_args():

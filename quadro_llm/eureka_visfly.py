@@ -6,6 +6,7 @@ reward function optimization directly with VisFly environments.
 """
 
 import logging
+import numpy as np
 from typing import Type, Dict, Any, List, Optional
 import time
 
@@ -19,11 +20,9 @@ from .core.models import TrainingResult
 from .core.models import OptimizationConfig
 from .core.model_evaluation import extract_environment_context_minimal
 from .core.subprocess_evaluator import SubprocessRewardEvaluator
+from .core.elite_voter import EliteVoter
 from .utils.tensorboard_utils import (
-    load_tensorboard_logs,
-    generate_eureka_style_feedback,
     extract_success_metric,
-    append_dataframe_to_feedback,
 )
 
 
@@ -49,6 +48,7 @@ class EurekaVisFly:
         device: str,
         max_workers: int,
         eval_env_config: Dict[str, Any],
+        use_coefficient_tuning: bool = False,
     ):
         """
         Initialize Eureka-VisFly controller.
@@ -78,6 +78,9 @@ class EurekaVisFly:
 
         # Initialize subprocess evaluator
         self.evaluator = SubprocessRewardEvaluator(self.logger)
+        
+        # Initialize elite voter for LLM-based selection
+        self.elite_voter = EliteVoter(self.llm)
 
         # Track optimization history
         self.optimization_history: List[List[TrainingResult]] = []
@@ -85,6 +88,12 @@ class EurekaVisFly:
         # Track complete iteration results (successful + failed) for detailed feedback
         self.complete_iteration_results: List[List] = []
         self.best_reward_functions: List[str] = []
+        
+        # Track elite voter results for feedback generation
+        self.elite_vote_results: List = []  # Store EliteVoterResult for each iteration
+        
+        # Coefficient tuning mode flag
+        self.use_coefficient_tuning = use_coefficient_tuning
 
     def create_environment(self, requires_grad: bool = False) -> Any:
         """Create a VisFly environment instance with specified configuration."""
@@ -114,14 +123,15 @@ class EurekaVisFly:
             try:
                 # Generate reward function candidates
                 self.logger.info(f"Generating {samples} reward functions...")
-                # Use enhanced feedback with tensorboard data if available
+                # Generate feedback from previous iteration results
+                # This feedback will be used for generating candidates AND for updating history later
                 feedback = (
-                    self._generate_feedback_with_tensorboard(iteration)
+                    self._generate_feedback(iteration)
                     if iteration > 0
                     else None
                 )
                 reward_functions = self.generate_reward_candidates(
-                    samples, iteration, feedback
+                    samples, iteration, feedback, use_coefficient_tuning=self.use_coefficient_tuning
                 )
 
                 if not reward_functions:
@@ -165,10 +175,10 @@ class EurekaVisFly:
                         "evaluation_episodes": self.config.evaluation_episodes,
                         "iteration": iteration,
                         "record_video": self.config.record_video,
+                        "gpu_memory_requirement_mb": self.config.gpu_memory_requirement_mb,
                     },
                     env_class_path=f"{self.env_class.__module__}.{self.env_class.__name__}",
                     max_concurrent=max_concurrent,
-                    timeout=self.config.timeout_per_iteration,
                     base_output_dir=base_output_dir,
                     eval_env_config=self.eval_env_config,
                 )
@@ -199,11 +209,56 @@ class EurekaVisFly:
                 # Store iteration results
                 self.optimization_history.append(training_results)
 
-                # Update best reward functions
-                if training_results:
-                    best_in_iteration = max(training_results, key=lambda x: x.success_rate)
-                    self.best_reward_functions.append(best_in_iteration.reward_code)
-                    self.logger.info(f"Best success rate: {best_in_iteration.success_rate:.3f}")
+                # Select best reward function using elite voter
+                if iteration_results:
+                    vote_result = self.elite_voter.vote(iteration_results)
+                    best_result = iteration_results[vote_result.selected_index]
+                    self.best_reward_functions.append(best_result.reward_code)
+                    self.elite_vote_results.append(vote_result)
+                    self.logger.info(f"Elite voter selected: {best_result.identifier} (success_rate={best_result.success_rate:.3f}, confidence={vote_result.confidence:.2f})")
+                    self.logger.debug(f"Voter reasoning: {vote_result.reasoning}")
+                    
+                    # Validate vote_result consistency
+                    if vote_result.selected_index >= len(iteration_results):
+                        self.logger.error(
+                            f"Iteration {iteration + 1}: vote_result.selected_index ({vote_result.selected_index}) "
+                            f"out of range for iteration_results (len={len(iteration_results)})"
+                        )
+                    elif iteration_results[vote_result.selected_index].identifier != best_result.identifier:
+                        self.logger.warning(
+                            f"Iteration {iteration + 1}: vote_result.selected_index points to different identifier. "
+                            f"Expected: {best_result.identifier}, "
+                            f"Got: {iteration_results[vote_result.selected_index].identifier}"
+                        )
+                    
+                    # Update conversation history with elite reward function only
+                    # Reconstruct the user prompt that was used for this iteration
+                    # Note: For history, we include static info only if it's the first iteration
+                    # (subsequent iterations already have it in history)
+                    # IMPORTANT: Use the feedback generated at the START of this iteration,
+                    # not regenerated here, because self.optimization_history already contains
+                    # current iteration results which would cause wrong data to be retrieved
+                    context_info = extract_environment_context_minimal(self.env_class)
+                    prev_feedback = feedback if iteration > 0 else ""
+                    prev_elite_code = self.best_reward_functions[-2] if len(self.best_reward_functions) >= 2 else None
+                    
+                    from .llm.prompts import create_user_prompt, extract_env_code_without_reward
+                    env_code = extract_env_code_without_reward(self.env_class)
+                    # Only include static info for first iteration (iteration 0)
+                    include_static_info = iteration == 0
+                    user_prompt = create_user_prompt(
+                        task_description=self.task_description,
+                        context_info=context_info,
+                        feedback=prev_feedback,
+                        env_code=env_code,
+                        api_doc=self.llm.api_doc_content if self.llm.api_doc_content else None,
+                        human_reward_code=None,  # Not needed for history update
+                        elite_reward_code=prev_elite_code,
+                        include_static_info=include_static_info,
+                    )
+                    
+                    # Update history with elite reward function (only elite, not first candidate)
+                    self.llm._update_conversation_history(best_result.reward_code, user_prompt)
                 else:
                     self.logger.warning(f"All samples failed in iteration {iteration + 1}. Regenerating...")
                     # Regenerate with simpler feedback when all fail
@@ -240,82 +295,232 @@ class EurekaVisFly:
         return all_results
 
     def generate_reward_candidates(
-        self, samples: int, iteration: int, feedback: Optional[str] = None
+        self, samples: int, iteration: int, feedback: Optional[str] = None, use_coefficient_tuning: bool = False
     ) -> List[str]:
         """Generate reward function candidates using LLM."""
-        # Build context-aware prompt without creating environment (avoids blocking)
-        context_info = extract_environment_context_minimal()
-        if feedback is None:
-            feedback = self.get_iteration_feedback(iteration)
+        if use_coefficient_tuning:
+            # Coefficient tuning mode: LLM only outputs coefficients
+            if feedback is None:
+                feedback = self.get_iteration_feedback(iteration)
+            
+            # Get current best coefficients for reference
+            current_coefficients = None
+            if iteration > 0 and self.optimization_history:
+                # Extract coefficients from best result if available
+                # For now, we'll just pass None and let LLM generate fresh
+                pass
+            
+            reward_functions = self.llm.generate_coefficients(
+                task_description=self.task_description,
+                feedback=feedback,
+                samples=samples,
+                current_coefficients=current_coefficients,
+            )
+        else:
+            # Standard Eureka mode: LLM generates full reward function
+            # Build context-aware prompt without creating environment (avoids blocking)
+            context_info = extract_environment_context_minimal(self.env_class)
+            if feedback is None:
+                feedback = self.get_iteration_feedback(iteration)
 
-        # Generate reward functions
-        reward_functions = self.llm.generate_reward_functions(
-            task_description=self.task_description,
-            context_info=context_info,
-            feedback=feedback,
-            samples=samples,
-            env_class=self.env_class,
-        )
+            # Get elite reward code from previous iteration if available
+            elite_reward_code = None
+            if iteration > 0 and self.best_reward_functions:
+                elite_reward_code = self.best_reward_functions[-1]
+            
+            # Generate reward functions
+            # Note: We don't update conversation history here - it will be updated
+            # after elite voter selection with only the elite reward function
+            reward_functions = self.llm.generate_reward_functions(
+                task_description=self.task_description,
+                context_info=context_info,
+                feedback=feedback,
+                samples=samples,
+                env_class=self.env_class,
+                previous_elite_reward=elite_reward_code,
+            )
 
         return reward_functions
 
     def get_iteration_feedback(self, iteration: int) -> str:
         """Generate feedback string based on previous iteration results."""
-        # Use enhanced tensorboard feedback method with sample success/failure info
-        return self._generate_feedback_with_tensorboard(iteration)
+        return self._generate_feedback(iteration)
 
-    def _generate_feedback_with_tensorboard(self, iteration: int, all_iteration_results=None) -> str:
+    def _generate_feedback(self, iteration: int, all_iteration_results=None) -> str:
         """
-        Generate enhanced feedback including tensorboard training curves.
-        Like real Eureka, includes detailed training metrics and sample success/failure info.
+        Generate concise feedback focused on evaluation results (LaRes-style).
+        TensorBoard data is handled by elite voter, not included in feedback.
 
         Args:
             iteration: Current iteration number
             all_iteration_results: All results from the iteration (successful + failed)
 
         Returns:
-            Feedback string with tensorboard data for the LLM
+            Concise feedback string with evaluation metrics for the LLM
         """
-        if iteration == 0 or not self.optimization_history:
+        # Check if we have previous iteration results
+        if iteration == 0:
             return "This is the first iteration. Focus on basic task completion."
 
-        # Get results from last iteration
-        last_results = self.optimization_history[-1]
-        
-        # Get complete results (successful + failed) from last iteration
+        # optimization_history stores successful TrainingResults; complete_iteration_results has everything
+        if not self.optimization_history and not self.complete_iteration_results:
+            self.logger.warning(
+                f"Iteration {iteration}: No optimization history or complete results available. "
+                "Returning first-iteration feedback."
+            )
+            return "This is the first iteration. Focus on basic task completion."
+
+        # Get results from last iteration (prefer optimization_history, fallback to complete_iteration_results)
+        # For iteration N, we need results from iteration N-1
+        # optimization_history[iteration-1] = results from iteration iteration-1
+        if self.optimization_history and len(self.optimization_history) >= iteration:
+            last_results = self.optimization_history[iteration - 1]
+            self.logger.info(
+                f"Using optimization_history[iteration-1] ({iteration-1}) with {len(last_results)} samples"
+            )
+        elif self.optimization_history:
+            # Fallback: use last available results (should not happen in normal flow)
+            self.logger.warning(
+                f"Iteration {iteration}: optimization_history has {len(self.optimization_history)} entries, "
+                f"expected at least {iteration}. Using last available."
+            )
+            last_results = self.optimization_history[-1]
+        elif self.complete_iteration_results and len(self.complete_iteration_results) >= iteration:
+            # Use complete results (includes both successful and failed)
+            self.logger.info(
+                f"Using complete_iteration_results as fallback, "
+                f"iteration {iteration-1} has {len(self.complete_iteration_results[iteration-1])} samples"
+            )
+            # Extract TrainingResult from RewardFunctionResult
+            complete_last_results = self.complete_iteration_results[iteration - 1]
+            # Convert RewardFunctionResult to TrainingResult for compatibility
+            last_results = [
+                TrainingResult(
+                    success_rate=r.success_rate,
+                    episode_length=r.episode_length,
+                    training_time=r.training_time,
+                    final_reward=r.final_reward,
+                    convergence_step=r.convergence_step,
+                    reward_code=r.reward_code,
+                    identifier=r.identifier,
+                    log_dir=getattr(r, 'log_dir', None),  # Preserve log_dir for TensorBoard feedback
+                )
+                for r in complete_last_results
+                if r.training_successful  # Only include training-completed samples
+            ]
+        else:
+            self.logger.warning(
+                f"Iteration {iteration}: No results available in optimization_history or complete_iteration_results"
+            )
+            return "This is the first iteration. Focus on basic task completion."
+
+        # Get complete results (successful + failed) from last iteration for detailed feedback
         complete_last_results = []
         if self.complete_iteration_results and len(self.complete_iteration_results) >= iteration:
             complete_last_results = self.complete_iteration_results[iteration - 1]
 
         if not last_results:
+            self.logger.warning(f"Iteration {iteration}: No training results available for feedback")
             return "Previous iteration had no successful results. Try simpler reward designs."
 
-        # Sort by score and get best result with sophisticated ranking
-        def rank_result(result):
-            """
-            Rank training results with multi-criteria selection:
-            1. Primary: Success rate (higher is better)
-            2. Secondary: Episode length (longer is better when success rates are equal)
-            """
-            return (result.success_rate, result.episode_length)
-        
-        best_result = max(last_results, key=rank_result)
-        
-        # Log the selection reasoning and find the best result's index
-        all_success_rates = [r.success_rate for r in last_results]
-        best_result_index = next(
-            i for i, r in enumerate(last_results) 
-            if r.identifier == best_result.identifier
-        )
-        
-        if len(set(all_success_rates)) == 1:  # All same success rate
-            self.logger.info(
-                f"All samples have same success rate ({all_success_rates[0]:.3f}). "
-                f"Selected sample {best_result_index} ('{best_result.identifier}') with longest episode length: {best_result.episode_length:.1f}"
+        # Get elite voter result if available
+        # For iteration N, we need the vote_result from iteration N-1
+        # elite_vote_results[0] = vote_result for iteration 0, etc.
+        vote_result = None
+        if iteration > 0 and self.elite_vote_results and len(self.elite_vote_results) >= iteration:
+            vote_result = self.elite_vote_results[iteration - 1]
+            self.logger.debug(
+                f"Iteration {iteration}: Retrieved vote_result from iteration {iteration - 1}, "
+                f"selected_index={vote_result.selected_index}, confidence={vote_result.confidence:.2f}"
             )
-        else:
+        
+        # Use elite voter selection if available, otherwise fallback to heuristic
+        best_result = None
+        best_result_index = None
+        best_result_raw = None
+        
+        if vote_result and complete_last_results:
+            # Get the selected identifier from the vote result
+            # We need to find which result was selected in the previous iteration
+            # vote_result.selected_index is based on the iteration_results list from that iteration
+            selected_identifier = None
+            if vote_result.selected_index < len(complete_last_results):
+                candidate_result = complete_last_results[vote_result.selected_index]
+                selected_identifier = candidate_result.identifier
+            else:
+                # Index out of range - fallback to first successful
+                self.logger.warning(
+                    f"Iteration {iteration}: vote_result.selected_index ({vote_result.selected_index}) "
+                    f"out of range for complete_last_results (len={len(complete_last_results)}). "
+                    "Using first successful result."
+                )
+            
+            # Find by identifier for reliability
+            if selected_identifier:
+                best_result_raw = next(
+                    (r for r in complete_last_results if r.identifier == selected_identifier),
+                    None
+                )
+                if best_result_raw is None:
+                    self.logger.warning(
+                        f"Iteration {iteration}: Could not find result with identifier '{selected_identifier}'. "
+                        "Falling back to index-based lookup."
+                    )
+                    # Fallback to index
+                    if vote_result.selected_index < len(complete_last_results):
+                        best_result_raw = complete_last_results[vote_result.selected_index]
+                    else:
+                        best_result_raw = None
+            else:
+                # Fallback: use first successful result
+                best_result_raw = next(
+                    (r for r in complete_last_results if r.training_successful),
+                    None
+                )
+            
+            if best_result_raw:
+                # Find corresponding TrainingResult
+                best_result = next(
+                    (r for r in last_results if r.identifier == best_result_raw.identifier),
+                    None
+                )
+                if best_result:
+                    best_result_index = next(
+                        i for i, r in enumerate(last_results) 
+                        if r.identifier == best_result.identifier
+                    )
+                    self.logger.info(
+                        f"Using elite voter selection: {best_result.identifier} "
+                        f"(success_rate={best_result.success_rate:.3f}, confidence={vote_result.confidence:.2f})"
+                    )
+                else:
+                    # Log detailed information for debugging
+                    available_identifiers = [r.identifier for r in last_results]
+                    self.logger.warning(
+                        f"Iteration {iteration}: Elite voter selected '{best_result_raw.identifier}' "
+                        f"but not found in last_results. "
+                        f"Available identifiers in last_results: {available_identifiers}. "
+                        f"best_result_raw.training_successful={best_result_raw.training_successful}. "
+                        "Using fallback."
+                    )
+                    best_result = None
+            else:
+                self.logger.warning(
+                    f"Iteration {iteration}: Could not find elite voter selected result. Using fallback."
+                )
+                best_result = None
+        
+        # Fallback to heuristic if no vote result
+        if best_result is None:
+            def rank_result(result):
+                return (result.success_rate, result.episode_length)
+            best_result = max(last_results, key=rank_result)
+            best_result_index = next(
+                i for i, r in enumerate(last_results) 
+                if r.identifier == best_result.identifier
+            )
             self.logger.info(
-                f"Selected sample {best_result_index} ('{best_result.identifier}') with best success rate: {best_result.success_rate:.3f}"
+                f"Fallback: Selected {best_result.identifier} with success_rate={best_result.success_rate:.3f}"
             )
 
         # Classify samples into successful vs failed
@@ -331,67 +536,80 @@ class EurekaVisFly:
         
         feedback_parts = []
         
-        # Add sample success/failure overview
-        if complete_last_results:
-            feedback_parts.append(f"ITERATION RESULTS: {len(complete_last_results)} samples evaluated")
-            if successful_samples:
-                feedback_parts.append(f"Successful samples: {successful_samples}")
-            if failed_samples:
-                feedback_parts.append(f"Failed samples: {failed_samples}")
-            feedback_parts.append("")  # Add spacing
-
-        # Try to load tensorboard logs for best result
-        if hasattr(best_result, "log_dir") and best_result.log_dir:
-            try:
-                tensorboard_logs = load_tensorboard_logs(best_result.log_dir)
-                if tensorboard_logs:
-                    # Generate Eureka-style feedback with training curves
-                    tensorboard_feedback = generate_eureka_style_feedback(
-                        tensorboard_logs
-                    )
-                    # Append DataFrame summary for next iteration agent
-                    enhanced_feedback = append_dataframe_to_feedback(
-                        tensorboard_feedback, tensorboard_logs,
-                        selected_index=best_result_index,
-                        total_candidates=len(last_results)
-                    )
-                    feedback_parts.append(enhanced_feedback)
-                    feedback_parts.append("")  # Add spacing
-            except Exception as e:
-                self.logger.warning(f"Could not load tensorboard logs: {e}")
-
-        # If no tensorboard data, fall back to basic metrics
-        if len(feedback_parts) <= 3:  # Only sample overview added, no TensorBoard data
-            if not complete_last_results:
-                # Add sample info if not already added
-                feedback_parts.append(f"ITERATION RESULTS: {len(last_results)} samples evaluated")
-                feedback_parts.append(f"Successful samples: {list(range(len(last_results)))}")
-                feedback_parts.append(f"Failed samples: []")
-                feedback_parts.append("")
-            
-            feedback_parts.append(f"SELECTED REWARD FUNCTION: #{best_result_index} (from {len(last_results)} successful candidates)")
-            feedback_parts.append(f"Previous best success rate: {best_result.success_rate:.3f}")
-            feedback_parts.append(f"Success rate: {best_result.success_rate:.3f}")
+        # Get best result's evaluation summary (LaRes-style feedback)
+        # TensorBoard data is handled by elite voter, not included in feedback
+        # best_result is already selected by elite voter (or fallback heuristic)
+        # best_result_raw is already set if elite voter was used, otherwise find it
+        if best_result_raw is None and complete_last_results:
+            # Fallback: find the raw result matching best_result
+            for r in complete_last_results:
+                if r.training_successful and r.identifier == best_result.identifier:
+                    best_result_raw = r
+                    break
+        
+        # LaRes-style concise feedback
+        feedback_parts.append(
+            f"Based on the above reward function, the current RL policy's win rate is {best_result.success_rate:.3f}."
+        )
+        
+        # Add elite voter's analysis if available
+        if vote_result and vote_result.reasoning:
+            feedback_parts.append("")
+            feedback_parts.append("Elite Voter Analysis (from previous iteration selection):")
+            feedback_parts.append(vote_result.reasoning)
+            feedback_parts.append("")
+        
+        # Add evaluation metrics from evaluation_summary if available
+        if best_result_raw and best_result_raw.evaluation_summary:
+            eval_sum = best_result_raw.evaluation_summary
             feedback_parts.append(
-                f"Average episode length: {best_result.episode_length:.1f}"
+                f"Below are the scores of the current policy on different metrics across multiple rounds during the evaluation process:"
             )
             
-            # Add selection reasoning when using episode length as tiebreaker
-            if len(set(all_success_rates)) == 1 and len(last_results) > 1:
-                feedback_parts.append(
-                    f"\nSelection reason: All {len(last_results)} samples had equal success rate ({all_success_rates[0]:.3f}). "
-                    f"Reward function #{best_result_index} was selected for achieving the longest episode length "
-                    f"({best_result.episode_length:.1f}), indicating better survival/learning."
-                )
+            eval_metrics = []
+            if 'success_count' in eval_sum:
+                eval_metrics.append(f"Success: {eval_sum['success_count']}/{eval_sum.get('actual_evaluation_episodes', 'N/A')} episodes")
+            if 'mean_episode_length' in eval_sum:
+                eval_metrics.append(f"Episode Length: {eval_sum['mean_episode_length']:.1f}")
+            if 'mean_final_distance' in eval_sum and not np.isnan(eval_sum.get('mean_final_distance', np.nan)):
+                eval_metrics.append(f"Final Distance to Target: {eval_sum['mean_final_distance']:.3f}m")
+            if 'collision_count' in eval_sum:
+                eval_metrics.append(f"Collisions: {eval_sum['collision_count']}")
+            if 'mean_episode_reward' in eval_sum:
+                eval_metrics.append(f"Episode Reward: {eval_sum['mean_episode_reward']:.2f}")
+            
+            if eval_metrics:
+                feedback_parts.append(" ".join(eval_metrics))
+            
+            # Add per-episode statistics if available (similar to LaRes's all_infos)
+            if best_result_raw.episode_statistics:
+                feedback_parts.append("\nPer-episode evaluation results:")
+                for i, ep_stat in enumerate(best_result_raw.episode_statistics[:5]):  # Show first 5 episodes
+                    ep_parts = [f"Episode {i+1}:"]
+                    if ep_stat.get('success'):
+                        ep_parts.append("Success")
+                    else:
+                        ep_parts.append("Failed")
+                    if 'final_distance_to_target' in ep_stat:
+                        ep_parts.append(f"Distance: {ep_stat['final_distance_to_target']:.3f}m")
+                    if 'collision' in ep_stat:
+                        ep_parts.append(f"Collision: {ep_stat['collision']}")
+                    feedback_parts.append(" ".join(ep_parts))
+        
+        feedback_parts.append("")
+        feedback_parts.append("Please carefully analyze the policy feedback. Some helpful tips for analyzing the policy feedback:")
+        feedback_parts.append("    (1) If the success rates are always near zero, then you must rewrite the entire reward function")
+        feedback_parts.append("    (2) If the current policy has already performed well on certain metrics, the focus should shift to the subsequent tasks.")
+        feedback_parts.append("    (3) If the reward is excessively large, it may need to be appropriately scaled to avoid learning issues.")
 
         # Add interpretation and suggestions based on metrics
         if best_result.success_rate < 0.3:
             feedback_parts.append(
                 "\nThe reward function needs major improvements. Consider:"
             )
-            feedback_parts.append("- Stronger distance-based rewards for navigation")
-            feedback_parts.append("- Better balanced collision penalties")
-            feedback_parts.append("- More effective reward shaping for exploration")
+            feedback_parts.append("- Stronger rewards for progress toward task objective")
+            feedback_parts.append("- Better balanced penalties for constraint violations")
+            feedback_parts.append("- More effective reward shaping to guide learning")
         elif best_result.success_rate < 0.7:
             feedback_parts.append(
                 "\nThe reward function shows promise. To improve further:"
@@ -471,7 +689,6 @@ class EurekaVisFly:
                     "evaluation_episodes": self.config.evaluation_episodes,
                 },
                 env_class_path=f"{self.env_class.__module__}.{self.env_class.__name__}",
-                timeout=self.config.timeout_per_iteration,
             )
 
             if result.training_successful:

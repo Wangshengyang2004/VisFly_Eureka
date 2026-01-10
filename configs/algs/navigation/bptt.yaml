@@ -6,47 +6,66 @@ algorithm:
       net_arch:
         state:
           layer: [512]
+          # ln: True
+#          bn: True
         depth:
-          kernel_size: [8, 4, 3]
-          channels: [32, 64, 64]
-          stride: [4, 2, 1]
-          padding: [0, 0, 0]
-          layer: [512]
-       
+          channel: [ 32, 64,128]
+          kernel_size: 2
+          stride: 2
+          padding: 1
+          layer: [256]
+ #          max_pool: 2
+#           ln: True
+#          bias: False
     critic:
       dist: mse
-      n_critics: 1
+      n_critics: 2
       net_arch:
         layer: [512, 512]
+        # ln: True
+#        bn: True
     actor:
-      dist: normal
+      dist: tanh_normal
       net_arch:
         layer: [512, 512]
+        # ln: True
 
-    activation_fn: relu
-    optimizer_class: adam
+#        bn: True
+
+    activation_fn: leaky_relu
+    optimizer_class: adamW
     optimizer_kwargs:
-      weight_decay: 0.00001
-  
-  learning_rate: 0.005
-  horizon: 96
+      weight_decay: 0.0001
+    share_features_extractor: False
+
+  learning_rate:
+    class: cosine
+    kwargs:
+      initial: 0.0002
+      final: 0.00005
+      period: 0.1
+
+  horizon: 192
   tau: 0.005
   gamma: 0.99
-  batch_size: 25600
-  train_freq: 96
-  gradient_steps: 10
-  actor_gradient_steps: 1
   device: cuda
+  gradient_steps: 10
+  train_freq: 48
+  batch_size: 25600
+  actor_gradient_steps: 1
+  ent_coef: 0.000
+  scene_freq: 3000000
+#  buffer_reset: True
+#  buffer_size: 40000
 
-# Learning/training parameters
 learn:
-  total_timesteps: 500000
-  log_interval: 20
+  total_timesteps: 20000000
+  # log_interval: 20
 
-# Test parameters
 test:
-  is_fig: true
-  is_fig_save: true
-  is_video: true 
-  is_video_save: true
-  render_kwargs: {}
+  is_fig: True
+  is_fig_save: True
+  is_video: True
+  is_video_save: True
+  is_sub_video: True
+  render_kwargs: { }

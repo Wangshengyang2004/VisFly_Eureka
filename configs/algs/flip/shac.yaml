@@ -1,6 +1,3 @@
-# SHAC configuration for flip environment
-# Aligned with hover/navigation settings
-
 algorithm:
   policy: SimplePolicy
   policy_kwargs:
@@ -9,17 +6,19 @@ algorithm:
       net_arch:
         state:
           layer: [512]
-        flip_progress:
-          layer: [32]
+        observation:
+          layer: [512]
+
     critic:
       dist: mse
-      n_critics: 2
+      n_critics: 1
       net_arch:
         layer: [512, 512]
     actor:
-      dist: normal
+      dist: tanh_normal
       net_arch:
         layer: [512, 512]
+
     activation_fn: relu
     optimizer_class: adam
     optimizer_kwargs:
@@ -35,22 +34,15 @@ algorithm:
   actor_gradient_steps: 1
   device: cuda
 
-# Environment overrides for SHAC
-env_overrides:
-  requires_grad: true
-  tensor_output: false
-  device: cpu
-  num_agent_per_scene: 160
-
-# Learning parameters
+# Learning/training parameters
 learn:
-  total_timesteps: 500000
+  total_timesteps: 50000000
   log_interval: 20
 
-# Test parameters
+# Test parameters (for evaluation mode)
 test:
-  is_fig: true
-  is_fig_save: true
-  is_video: true
-  is_video_save: true
+  is_fig: True
+  is_fig_save: True
+  is_video: True
+  is_video_save: True
   render_kwargs: {}

@@ -1,0 +1,12 @@
+llm:
+  vendor: "aigc35"
+  model: "gpt-5-nano"
+  temperature: 1.0
+  timeout: 120
+  max_retries: 3
+  thinking:
+    enabled: true
+  batching:
+    strategy: "adaptive"
+    supports_n_parameter: true
+    max_concurrent: 8

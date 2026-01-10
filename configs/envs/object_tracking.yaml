@@ -13,7 +13,7 @@ env:
       position: [0, 0, 0.0]
       orientation: [0, 0, 0]
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
     obj_settings:
       dynamic_objects:
         - position: [5, 0, 1]
@@ -56,7 +56,7 @@ eval_env:
   visual: true
   tensor_output: true
   scene_kwargs:
-    path: "datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
     obj_settings:
       dynamic_objects:
         - position: [5, 0, 1]

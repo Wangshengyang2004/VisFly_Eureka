@@ -1,0 +1,83 @@
+VisFly Reward API
+==================
+
+Purpose
+-------
+Use this note when writing `get_reward(self, predicted_obs=None) -> torch.Tensor` inside VisFly environments. The `predicted_obs` parameter is optional and provided for model-based RL (Dreamer-style) but can be ignored. Rewards must return a 1-D tensor of length `self.num_agent` (one value per drone) on `self.device`. Always stay in torch, keep gradients intact, and avoid in-place ops on tensors returned by the simulator.
+
+Core State Handles
+------------------
+- `self.num_agent` / `self.num_envs`: total agents simulated in parallel (int).
+- `self.device`: torch device where tensors live.
+- `self._step_count`: tensor `(num_agent,)` with current step index per agent.
+- `self.max_episode_steps`: scalar int limit; use for shaping time-based bonuses.
+- `self.position`: tensor `(num_agent, 3)` world positions (meters).
+- `self.velocity`: tensor `(num_agent, 3)` linear velocity (m/s). Use `(self.velocity - 0)` to keep gradients.
+- `self.envs.acceleration`: tensor `(num_agent, 3)` world-frame acceleration. Use `(self.envs.acceleration - 0)` to keep gradients.
+- `self.angular_velocity`: tensor `(num_agent, 3)` body angular rates (rad/s). Use `(self.angular_velocity - 0)` to keep gradients.
+- `self.envs.angular_acceleration`: tensor `(num_agent, 3)` angular accelerations. Use `(self.envs.angular_acceleration - 0)` to keep gradients.
+- `self.orientation`: tensor `(num_agent, 4)` quaternions; order `[w, x, y, z]`.
+- `self.direction`: forward (body x-axis) unit vector in world frame. Shape: `(num_agent, 3)`.
+- `self.state`: core state vector (position + orientation + velocity + angular_velocity).
+- `self.full_state`: extended state with motor data and time.
+- `self.extend_state`: most comprehensive state including accelerations (28 dims).
+- `self.t`: tensor `(num_agent,)` simulation time (seconds).
+
+Collision + Scene Awareness
+---------------------------
+- `self.is_collision`: bool tensor `(num_agent,)` flagged when the drone intersects geometry or exits bounds.
+- `self.collision_vector`: tensor `(num_agent, 3)` pointing from the drone toward the active collision point.
+- `self.collision_dis`: tensor `(num_agent,)` Euclidean distance to the nearest obstacle (meters).
+- `self.collision_point`: tensor `(num_agent, 3)` world coordinates of the closest surface point.
+- `self.is_out_bounds`: bool tensor for out-of-bounds detection.
+- `self.once_collided`: track if collision occurred at least once.
+- `self.uav_radius`: drone collision radius constant.
+
+Sensors
+-------
+`self.sensor_obs` maps sensor `uuid` to raw outputs (torch or numpy arrays). Common keys:
+- `"depth"`: shape `(num_agent, H, W)` or `(num_agent, 1, H, W)` in meters.
+- `"color"`: shape `(num_agent, 3, H, W)` RGB uint8.
+- `"IMU"`: IMU sensor data with noise.
+- `"semantic"`: semantic segmentation (if available).
+- `self.visual`: bool indicating if visual sensors are enabled.
+
+Orientation Utilities
+---------------------
+- `self.direction`: forward direction vector (body x-axis in world frame).
+- `self.R`: rotation matrix (3x3).
+- `self.xz_axis`: XZ axis orientation.
+- Use `self.direction` for heading alignment rewards.
+
+Task-Specific Variables
+-----------------------
+These variables may be available depending on the specific task environment:
+- `self.target`: target position/goal tensor.
+- `self.success_radius`: radius tolerance for success detection.
+- `self.center`: center point for circular or symmetric tasks.
+
+General Safety Notes
+--------------------
+- Only touch attributes listed in this document or surfaced directly by the provided environment stub.
+- Do not guard attribute access with `hasattr` / `if attr exists` branches—omit uncertain terms.
+- Always operate on clones or expressions like `(tensor - 0)` to avoid modifying simulator buffers.
+- Avoid python floats inside `torch.where`; pass scalar floats, not new tensors with device mismatches.
+- Clamp divisions with small epsilon (`1e-6` or `1e-8`) to keep gradients finite.
+- Never change `self.*` buffers in-place (e.g., `self.position +=` is forbidden).
+- Keep outputs finite: guard against `nan`/`inf` using `torch.where` or clamping.
+- Respect device: wrap constants using `torch.full((self.num_agent,), value, device=self.device)` when you need per-agent scalars.
+
+Useful Scalars
+--------------
+- `self.envs.dynamics.ctrl_dt`: control timestep (seconds).
+- `self.envs.dynamics.action_type`: string (`"bodyrate"`, `"velocity"`, etc.) if reward depends on control mode.
+- `self.is_eval`: evaluation flag for deterministic shaping (in some envs).
+
+Coding Checklist
+----------------
+- Return tensor shape `(num_agent,)`, dtype float32, device = `self.device`.
+- Most state tensors have shape `(num_agent, 3)` or `(num_agent, 4)`.
+- Use `.norm(dim=1)` to reduce `(num_agent, 3)` tensors to `(num_agent,)`.
+- Compose from torch ops only; no numpy/scipy inside rewards.
+- Reuse helper vectors (`self.direction`, `self.collision_vector`) rather than re-deriving heavy geometry.
+- Logically separate reward terms for distance, smoothness, safety, and bonuses.

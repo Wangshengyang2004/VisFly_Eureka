@@ -1,0 +1,14 @@
+# Hover task configuration
+
+task:
+  name: "drone_hover"
+  category: "hover"
+  envs: "hover"  # Environment to use for this task
+
+  # Task description for LLM
+  description: >
+    Hover drone to target position efficiently.
+
+    The drone must:
+    1. Reach the target position with high precision
+    2. Maintain stable flight dynamics

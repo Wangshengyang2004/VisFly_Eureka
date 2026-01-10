@@ -69,22 +69,47 @@ class ModelEvaluator:
         return success_rate, avg_episode_length, avg_final_reward
 
 
-def extract_environment_context_minimal() -> dict:
-    """Extract environment context without creating environment instances."""
+def extract_environment_context_minimal(env_class: Optional[type] = None) -> dict:
+    """Return lightweight context cues for reward generation without instantiating envs."""
+
+    if env_class is None:
+        return {
+            "environment_class": "DroneEnv",
+            "state": "state vector contains position (x,y,z), velocity (x,y,z), orientation quaternion, angular velocity (x,y,z)",
+            "available_attributes": [
+                "position", "velocity", "orientation", "angular_velocity",
+                "accumulated_rotation", "flip_command", "target_position",
+                "collision_vector", "flip_progress"
+            ],
+            "notes": "Use provided tensors; no rotation matrix attribute exists."
+        }
+
+    name = env_class.__name__
+
+    if name == "FlipEnv":
+        return {
+            "environment_class": "FlipEnv",
+            "state": "state observation is 60-dim (relative_pos, velocity, angular_velocity, orientation, target_pos, quat_diff, future_quat_diff)",
+            "available_attributes": [
+                "position", "velocity", "orientation", "angular_velocity",
+                "is_collision", "collision_dis", "collision_vector", "target", "progress_buf", "command_quat",
+                "command_quat_diff", "relative_pos", "hover_before_steps",
+                "flip_steps", "hover_after_steps", "target_angle_total"
+            ],
+            "notes": (
+                "Use 'target' (not 'target_position') to access the target position tensor. "
+                "Use 'command_quat_diff' (4D tensor) to track rotation error. "
+                "Use 'progress_buf' to track current step. "
+                "Use 'relative_pos' for position error. "
+                "Flip progress can be computed as: (progress_buf - hover_before_steps) / flip_steps if in flip phase, clamped to [0, 1]. "
+                "Use 'collision_dis' (tensor of shape [num_envs]) for collision distance and 'collision_vector' (tensor of shape [num_envs, 3]) for collision direction. "
+                "Use 'is_collision' (boolean tensor) to check if collision occurred."
+            )
+        }
+
     return {
-        "environment_class": "NavigationEnv",
-        "num_agents": 4,
-        "observation_space": "MultiDict with 'state', 'depth', 'target'",
-        "action_space": "Box(4,) for bodyrate control",
-        "max_episode_steps": 256,
-        "device": "cuda",
-        "sensors": [
-            {
-                "type": "DEPTH",
-                "uuid": "depth", 
-                "resolution": [64, 64]
-            }
-        ],
+        "environment_class": name,
+        "notes": "Use tensors exposed on the environment (position, velocity, orientation, angular_velocity, collision_vector)."
     }
 
 

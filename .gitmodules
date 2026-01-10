@@ -1,0 +1,7 @@
+[submodule "VisFly"]
+	path = VisFly
+	url = https://github.com/SJTU-ViSYS-team/VisFly.git
+	branch = beta
+[submodule "algorithms/BPTT_series"]
+	path = algorithms/BPTT_series
+	url = https://github.com/Fanxing-LI/BPTT_series.git
