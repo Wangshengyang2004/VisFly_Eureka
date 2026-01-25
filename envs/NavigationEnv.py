@@ -29,11 +29,11 @@ def smooth_l1_loss_per_row(pred, target, beta: float = 1.0, reduction: str = "me
     # import torch as th
     diff = pred - target
     abs_diff = diff.abs()
-    if beta <= 0:
-        loss = abs_diff
-    else:
-        mask = abs_diff < beta
-        loss = th.where(mask, 0.5 * diff * diff / beta, abs_diff - 0.5 * beta)
+    # if beta <= 0:
+    #     loss = abs_diff
+    # else:
+    mask = abs_diff < beta
+    loss = th.where(mask, 0.5 * diff * diff / beta, abs_diff - 0.5 * beta)
     # if reduction == "mean":
     #     return loss.mean(dim=1)
     # if reduction == "sum":
@@ -108,15 +108,8 @@ class NavigationEnv(DroneGymEnvsBase):
         if pos_target is not None:
             self.pos_target = th.tensor(pos_target)
 
-    def _reset_attr(self, indices=None, reset_latent: bool = True):
-        """
-        Reset environment-specific attributes.
-
-        Keep the signature compatible with `DroneGymEnvsBase._reset_attr`,
-        so higher-level calls like `reset()` can safely pass `reset_latent`.
-        """
-        # Delegate core bookkeeping (step counts, rewards, latent states, etc.)
-        super()._reset_attr(indices, reset_latent=reset_latent)
+    def _reset_attr(self, indices=None,reset_latent=False):
+        super()._reset_attr(indices)
 
         if not self.pre_define_target:
             indices = np.arange(self.num_envs) if indices is None else indices
@@ -133,8 +126,9 @@ class NavigationEnv(DroneGymEnvsBase):
 
     def detach(self):
         super().detach()
-        self._pre_acc = self._pre_acc.detach()
-
+        if hasattr(self, "_pre_acc"):
+            self._pre_acc = self._pre_acc.detach()
+    
     def get_observation(
             self,
             indices=None
@@ -149,12 +143,15 @@ class NavigationEnv(DroneGymEnvsBase):
         # else:
         #     new_target = self.target
         if hasattr(self, "pos_target"):
-            self.target = (self.pos_target - self.position)
-            self.target = (((self.pos_target - self.position)
-                           / self.target.norm(dim=1, keepdim=True))
-                           * self.target.norm(dim=1, keepdim=True).clamp_max(self.max_rand_velocity))
-            scale = ((1 + self.velocity.norm(dim=1) / (self.target.norm(dim=1)+1e-6)) / 2).clamp_min(1.)
-            self.target = self.target * scale.unsqueeze(1)
+            pos_target = self.pos_target.repeat(self.num_scene, 1)
+            rela_target = (pos_target - self.position)
+            self.target = ((rela_target
+                           / rela_target.norm(dim=1, keepdim=True))
+                           * (rela_target.norm(dim=1, keepdim=True)/1).clamp_max(self.max_rand_velocity)
+                           # * (rela_target.norm(dim=1, keepdim=True)/1).clamp_max(self.max_rand_velocity)
+                           )
+            # scale = ((1 + self.velocity.norm(dim=1) / (self.target.norm(dim=1)+1e-6)) / 2).clamp_min(1.)
+            # self.target = self.target * scale.unsqueeze(1)
 
         orientation = self.envs.dynamics._orientation.clone()
         # rela = new_target - self.position
@@ -172,15 +169,29 @@ class NavigationEnv(DroneGymEnvsBase):
             self.angular_velocity / 10,
         ]).to(self.device)
 
+        max_dis = 24.
+        min_dis = 0.1
+        scale = 3.
+
+        preprocess = lambda x: 1 / (1 + th.as_tensor(x).clamp(min_dis, max_dis) / scale)
+
         obs = TensorDict({
             "state": state,
-            "depth": 1/(1+th.tensor(self.sensor_obs["depth"]/4))
+            "depth": preprocess(self.sensor_obs["depth"])
+            # "depth": 1 / (1 + th.tensor(self.sensor_obs["depth"]).clamp(min_dis, max_dis) / scale)
+            # "depth": th.tensor(self.sensor_obs["depth"]).clamp(min_dis, max_dis) / max_dis
         })
 
         if "depth2" in list(self.observation_space.keys()):
-            obs["depth2"] = th.tensor(self.sensor_obs["depth2"])
-            f = lambda x: F.max_pool2d(x, kernel_size=2, stride=2)
-            obs["depth"] = f(f(1/(1+obs["depth2"]/4)))
+            obs["depth2"] = th.tensor(self.sensor_obs["depth2"]).clamp(min_dis, max_dis)
+            max_pool2 = lambda x: F.max_pool2d(x, kernel_size=2, stride=2)
+            avg_pool2 = lambda x: F.avg_pool2d(x, kernel_size=2, stride=2)
+            max_pool4 = lambda x: F.max_pool2d(x, kernel_size=4, stride=4)
+            avg_pool4 = lambda x: F.avg_pool2d(x, kernel_size=4, stride=4)
+            # obs["depth"] = max_pool2(avg_pool2(1/(1+obs["depth2"]/scale)))
+            obs["depth"] = max_pool2(1/(1+avg_pool2(obs["depth2"]/scale)))
+
+        #     obs["depth"] = 1 / (1 + f2(obs["depth2"]) / scale)
         return obs
 
     def get_success(self) -> th.Tensor:
@@ -191,7 +202,7 @@ class NavigationEnv(DroneGymEnvsBase):
                         (self.position[:,1]>29.) | (self.position[:,1]<=-29.)
         return reach_bound
 
-    def get_reward(self, predicted_obs=None) -> th.Tensor:
+    def get_reward(self,predicted_obs=None) -> th.Tensor:
         # precise and stable target flight
         base_r = 0.1
 
@@ -201,51 +212,52 @@ class NavigationEnv(DroneGymEnvsBase):
         # pos_r = pos_r / scale
 
         vel_r = (self.velocity - self.target).norm(dim=1)
-        vel_r = smooth_l1_loss_per_row(vel_r, th.zeros_like(vel_r)) * -0.04
-        ang_r = (self.angular_velocity - 0).norm(dim=1) * -0.02
+        adaptive_beta = (self.velocity.norm(dim=1)/6).clamp_min(1.0)
+        vel_r = smooth_l1_loss_per_row(vel_r, adaptive_beta) * -0.025
+        ang_r = (self.angular_velocity - 0).norm(dim=1) * -0.005
 
-        acc_r = (self.envs.acceleration-0).norm(dim=1).pow(1)  # * -0.005
-        acc_r = smooth_l1_loss_per_row(acc_r, th.zeros_like(acc_r)) * -0.003
+        acc_r = (self.envs.acceleration-0).norm(dim=1).pow(1.3) * -0.002
+        # acc_r = smooth_l1_loss_per_row(acc_r, th.zeros_like(acc_r)) * -0.003
         if not hasattr(self, "_pre_acc"):
             self._pre_acc = self.envs.acceleration.clone()
-        acc_change_r = (self.envs.acceleration - self._pre_acc).norm(dim=1).pow(2) * -0.005
+        acc_change_r = ((self.envs.acceleration - self._pre_acc).norm(dim=1)/ self.envs.dynamics.dt).pow(2) \
+                       * -0.0001
+        self._pre_acc = self.envs.acceleration.clone()
         # act_r = self._action.norm(dim=1).cpu() * -0.001
         act_change_r = (self.envs.dynamics._pre_action[-2].to(self.device).T -
                         self._action.to(self.device)
-                        ).norm(dim=-1) * -0.004
+                        ).norm(dim=-1) / self.envs.dynamics.dt * -0.006
 
         #  heading alignment
         unit_velocity = self.velocity / (self.velocity.norm(dim=1, keepdim=True)+1e-6)
         align = (unit_velocity * self.direction).sum(dim=1)
         align_r = align * self.velocity.norm(dim=1) * 0.005
 
-        share_factor_collision = 0.50
+        share_factor_collision = -0.6
+        # share_factor_collision = 0.0
         # collision penalty
         collision_dis = self.collision_vector.norm(dim=1).clamp_min(0.)
         collision_dir = self.collision_vector / (collision_dis.unsqueeze(1)+1e-6)
+        collision_dis = (collision_dis - 0.1).abs()
         # approaching_point = self.envs.approaching_point
         # velocity
-        thre_vel = 1.5
+        thre_vel = 1.0
         weight = ((thre_vel-collision_dis.detach()).clamp(min=0, )/thre_vel).pow(1)
         # weight = 1 / (1 + ((thre_vel-collision_dis) * 0.3).clamp(min=0,))
         col_approach_velocity = (self.velocity * collision_dir.detach()).sum(dim=1).clamp_min(0.)
-        col_vel_r = col_approach_velocity * weight * -1 * share_factor_collision * 0.5
-
-        thre_vel = 0.5
-        weight = ((thre_vel - collision_dis.detach()).clamp(min=0, ) / thre_vel).pow(1)
-        approach_vector_proj = col_approach_velocity / self.velocity.norm(dim=1).clamp_min(1e-6)
+        col_vel_r = col_approach_velocity * weight * share_factor_collision
 
         # position
-        k = 0.015
-        func = lambda x: 12 * k / (x+k)
+        k = 0.005
+        func = lambda x: 6 * k / (x+k)
         func3 = lambda x: 2.5 * th.log(1+th.exp(-32*x))
         func2 = lambda x: -x
-        col_dis_r = func(collision_dis) * -2 * share_factor_collision
+        col_dis_r = func(collision_dis) * share_factor_collision
 
         reward = {
             "reward": base_r + vel_r + ang_r + align_r
                     + act_change_r + acc_r
-                    + acc_change_r
+                    # + acc_change_r
                     + col_vel_r + col_dis_r
             ,
             # "pos_r": dl(pos_r),

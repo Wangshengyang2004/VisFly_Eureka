@@ -1,0 +1,7 @@
+# MiniMax M2.1 Agent Configuration (Claude Agent SDK compatible)
+# Copy this to minimax.yaml and add your API key
+agent:
+  base_url: "https://api.minimaxi.com/anthropic"
+  model: "MiniMax-M2.1"
+  api_key: "YOUR_MINIMAX_API_KEY"
+  timeout_ms: 3000000

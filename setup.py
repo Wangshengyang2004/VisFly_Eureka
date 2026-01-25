@@ -24,7 +24,7 @@ def read_requirements():
 setup(
     name="quadro-llm",
     version="1.0.0",
-    author="Claude Code & Simon Wang",
+    author="Shengyang Wang",
     author_email="wangshengyang2004@gmail.com",
     description="Quadro-LLM: LLM-powered reward optimization for autonomous drone navigation",
     long_description=read_readme(),
@@ -56,7 +56,6 @@ setup(
     entry_points={
         "console_scripts": [
             "quadro-llm=quadro_llm.main:main",
-            "visfly-train=quadro_llm.visfly_training_wrapper:main",
         ],
     },
     include_package_data=True,

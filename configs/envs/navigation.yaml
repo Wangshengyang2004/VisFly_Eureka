@@ -1,12 +1,13 @@
 env:
-  num_agent_per_scene: 10
+  num_agent_per_scene: 32
   num_scene: 20
   max_episode_steps: 768
   scene_kwargs:
 #    path: VisFly/datasets/visfly-beta/configs/scenes/box30_pillar
 #    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_high_low
 #    path: VisFly/datasets/visfly-beta/configs/scenes/box30_high_low
-    path: VisFly/datasets/visfly-beta/configs/scenes/box30_mix
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_mix2
+    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_0.08tree
 #   path: VisFly/datasets/visfly-beta/configs/scenes/box15_wall_median
 #    path: VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty
   sensor_kwargs:
@@ -33,8 +34,10 @@ env:
 #            - class: Uniform
 #              kwargs:
       - position:
-          mean: [ 2, 0.0, 5.0 ]
-          half: [ 1, 29., 4.0 ]
+#          mean: [ 2, 0.0, 5.0 ]
+#          half: [ 1, 29., 4.0 ]
+          mean: [ 2, 0.0, 2.0 ]
+          half: [ 1, 29., 1.0 ]
         orientation:
           mean: [ 0., 0., 0. ]
           half: [ 0.5, 0.5, 0.5 ]
@@ -47,8 +50,10 @@ env:
 #            - class: Uniform
 #              kwargs:
       - position:
-          mean: [ 58, 0.0, 5.0 ]
-          half: [ 1, 29., 4.0 ]
+#          mean: [ 58, 0.0, 5.0 ]
+#          half: [ 1, 29., 4.0 ]
+            mean: [ 58, 0.0, 2.0 ]
+            half: [ 1, 29., 1.0 ]
         orientation:
           mean: [ 0., 0., 3.14 ]
           half: [ 0.5, 0.5, 0.5 ]
@@ -61,8 +66,10 @@ env:
 #            - class: Uniform
 #              kwargs:
       - position:
-          mean: [ 30, 28, 5.0 ]
-          half: [ 29., 1, 4.0 ]
+#          mean: [ 30, 28, 5.0 ]
+#          half: [ 29., 1, 4.0 ]
+            mean: [ 30, 28, 2.0 ]
+            half: [ 29., 1, 1.0 ]
         orientation:
           mean: [ 0., 0., -1.57 ]
           half: [ 0.5, 0.5, 0.5]
@@ -75,8 +82,10 @@ env:
 #            - class: Uniform
 #              kwargs:
       - position:
-          mean: [ 30, -28, 5.0 ]
-          half: [ 29., 1, 4.0 ]
+#          mean: [ 30, -28, 5.0 ]
+#          half: [ 29., 1, 4.0 ]
+            mean: [ 30, -28, 2.0 ]
+            half: [ 29., 1, 1.0 ]
         orientation:
           mean: [ 0., 0., 1.57 ]
           half: [ 0.5, 0.5, 0.5]
@@ -97,16 +106,17 @@ env:
   device: cpu
   requires_grad: True
   tensor_output: True
-  max_rand_velocity: 10.0
-  is_collision_reset: False
+  max_rand_velocity: 12.0
+  is_collision_reset: True
 #  target: [[15,0,1]]
 
 eval_env:
-  num_scene: 1
+  num_scene: 5
   num_agent_per_scene: 5
   visual: True
   max_episode_steps: 512
   tensor_output: True
+  device: cpu
   sensor_kwargs:
     - sensor_type: depth
       uuid: depth
@@ -128,17 +138,22 @@ eval_env:
 #            half: [ 0., 25., 0.2 ]
           orientation:
             mean: [0., 0., 0.]
-            half: [0., 0., 1.0]
+            half: [0., 0., 0.0]
 #          heading: True
           test: True
           xyz_num: [1,5,1]
 
   scene_kwargs:
-#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_empty
-#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_test
-    path: VisFly/datasets/visfly-beta/configs/scenes/box30_0.04tree
-    shuffle: False
 #    path: VisFly/datasets/visfly-beta/configs/scenes/box30_0.02tree
+
+    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_0.08tree
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_0.02tree
+#    obj_settings:
+#      path: box60/slow_low
+    #    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_empty
+    #    path: VisFly/datasets/visfly-beta/configs/scenes/box30_test
+#    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_0.04tree
+    shuffle: False
 #    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_tree
 #    path: VisFly/datasets/visfly-beta/configs/scenes/box30_wall_high_test
 #    path: VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty
@@ -158,10 +173,10 @@ eval_env:
       axes: True
 #  target: [[3,1,0],[3,-1.,0],[3,2,0],[3,0,0],[3,-2,0]]
 #  target: [[10,0,0]]
-  max_rand_velocity: 9.0
-  pos_target: [[56,-20,2],[56,-10,2],[56,0,2],[56,10,2],[56,20,2]]
+  max_rand_velocity: 12.0
+  pos_target: [[58,-20,2],[58,-10,2],[58,0,2],[58,10,2],[58,20,2]]
 #  pos_target: [[56,-24,5],[56,-12,5],[56,0,5],[56,12,5],[56,24,5]]
 #  target: [[5,0,0]]
-#  target: [[6,0,0]]
+#  target: [[12,0,0]]
 
 #  target: [[26,-12,1.5],[26,-6,1.5],[26,0,1.5],[26,6,1.5],[26,12,1.5]]

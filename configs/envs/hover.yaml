@@ -27,7 +27,7 @@ env:
       kwargs:
         - position:
             mean: [15.0, 0.0, 1.5]
-            half: [5.0, 5.0, 0.5]
+            half: [3.0, 3.0, 0.5]
           orientation: 
             mean: [0.0, 0.0, 0.0]
             half: [0.0, 0.0, 1.57]
@@ -73,7 +73,7 @@ eval_env:
       kwargs:
         - position:
             mean: [15.0, 0.0, 1.5]
-            half: [5.0, 5.0, 0.5]
+            half: [1.0, 1.0, 0.5]
           orientation:
             mean: [ 0.0, 0.0, 0.0 ]
             half: [ 0.0, 0.0, 1.57 ]

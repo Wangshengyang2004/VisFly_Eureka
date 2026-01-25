@@ -114,7 +114,7 @@ def find_latest_run_tensorboard():
     return latest["run_root"]
 
 
-def launch_tensorboard(logdir, port=6006):
+def launch_tensorboard(logdir, port=60018):
     """Launch TensorBoard server."""
     if not Path(logdir).exists():
         logger.error(f"Log directory not found: {logdir}")
@@ -192,7 +192,7 @@ def extract_training_metrics(results_dir=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Monitor TensorBoard logs for VisFly-Eureka")
-    parser.add_argument("--port", "-p", type=int, default=6006, help="TensorBoard port (default: 6006)")
+    parser.add_argument("--port", "-p", type=int, default=60018, help="TensorBoard port (default: 60018)")
     parser.add_argument("--logdir", "-d", help="Specific log directory to use")
     parser.add_argument("--latest", action="store_true", help="Use latest run automatically")
     parser.add_argument("--list", action="store_true", help="List all available TensorBoard logs")

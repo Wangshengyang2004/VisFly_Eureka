@@ -6,7 +6,8 @@ numpy>=1.21.0
 scipy>=1.7.0
 
 # LLM Integration
-openai>=1.0.0
+openai
+claude-agent-sdk
 
 # Reinforcement Learning
 stable-baselines3>=1.6.0

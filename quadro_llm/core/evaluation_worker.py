@@ -8,7 +8,7 @@ Key behaviors:
 - Adds project_root and project_root/VisFly to sys.path (from config)
 - Dynamically imports the specified environment class
 - Injects the provided reward function (expects a get_reward(self) function)
-- Supports BPTT algorithm for training (extensible)
+- Supports multiple training algorithms: BPTT, PPO, SHAC
 """
 
 from __future__ import annotations
@@ -21,11 +21,15 @@ import os
 import sys
 import time
 import traceback
+import math
+import inspect
+import types
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
 import torch
+import torch as th
 import numpy as np
 
 import cv2  # type: ignore
@@ -35,14 +39,14 @@ import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 
 # Import FigFashion from VisFly for 3x3 plots
-import sys
-from pathlib import Path
 visfly_path = Path(__file__).resolve().parents[2] / "VisFly"
 if str(visfly_path) not in sys.path:
     sys.path.insert(0, str(visfly_path))
 from VisFly.utils.FigFashion.FigFashion import FigFon
 from VisFly.utils.maths import Quaternion
-import torch as th
+
+# Import algorithms.BPTT_series.BPTT at top level
+from algorithms.BPTT_series.BPTT import BPTT
 
 
 def ensure_video_writer(writer: Optional[Any], frame: np.ndarray, path: Path, fps: int) -> Any:
@@ -301,8 +305,6 @@ def _std(values: List[float]) -> float:
 
 def _extract_rgb_frame(frame: Any) -> Optional["np.ndarray"]:
     """Normalize different frame layouts to HxWx3 RGB uint8 arrays."""
-    import numpy as np
-
     if frame is None:
         return None
 
@@ -372,17 +374,38 @@ def _import_env_class(env_class_path: str):
 
 def _inject_reward_to_class(env_class: Any, reward_code: str, logger: logging.Logger) -> bool:
     """Inject user-provided get_reward into environment class (like run.py)."""
-    import numpy as np  # noqa: F401
-    import torch as th
-    import math
     # Use same execution context as run.py
     exec_globals: Dict[str, Any] = {
         "torch": th,
         "th": th,
-        "np": __import__("numpy"),
-        "numpy": __import__("numpy"),
+        "np": np,
+        "numpy": np,
         "math": math,
     }
+    
+    # Extract helper functions from environment module
+    # These are functions defined at module level (not class methods, not imported)
+    try:
+        env_module = inspect.getmodule(env_class)
+        if env_module is not None:
+            for name in dir(env_module):
+                # Skip private attributes and things already in exec_globals
+                if name.startswith('_') or name in exec_globals:
+                    continue
+                
+                try:
+                    obj = getattr(env_module, name)
+                    # Include only functions defined in this module (not imported)
+                    if inspect.isfunction(obj) and inspect.getmodule(obj) == env_module:
+                        exec_globals[name] = obj
+                        logger.debug(f"Added helper function '{name}' from environment module to exec context")
+                except (AttributeError, TypeError):
+                    # Skip attributes that can't be inspected
+                    continue
+    except Exception as e:
+        logger.warning(f"Failed to extract helper functions from environment module: {e}")
+        # Continue anyway, as helper functions may not exist
+    
     try:
         exec(reward_code, exec_globals)
     except Exception as e:
@@ -460,10 +483,9 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
 
         # Algorithm and device setup
         algorithm = optimization_config["algorithm"].lower()
-        eval_episodes_raw = int(optimization_config["evaluation_episodes"])
-        if eval_episodes_raw < 1:
-            logger.warning(f"evaluation_episodes must be >= 1, got {eval_episodes_raw}. Using 1.")
-        eval_episodes = max(1, eval_episodes_raw)
+        eval_episodes = int(optimization_config["evaluation_episodes"])
+        if eval_episodes < 1:
+            raise ValueError(f"evaluation_episodes must be >= 1, got {eval_episodes}")
 
         # Load algorithm config - extract environment name from class path
         logger.info("[stage] loading algorithm config ...")
@@ -485,9 +507,17 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         env_device = env_config["device"]
         alg_device = alg_params["device"]
         logger.info(f"Environment device: {env_device}, Algorithm device: {alg_device}")
-        
-        # Set requires_grad for BPTT
-        env_config = {**env_config, "requires_grad": True}
+
+        # Configure requires_grad based on algorithm type
+        # BPTT and SHAC require gradients; PPO does not
+        if algorithm in ("bptt", "shac"):
+            env_config = {**env_config, "requires_grad": True}
+            logger.info(f"requires_grad=True for {algorithm.upper()}")
+        elif algorithm == "ppo":
+            env_config = {**env_config, "requires_grad": False}
+            logger.info("requires_grad=False for PPO")
+        else:
+            raise ValueError(f"Unsupported algorithm: {algorithm}")
 
         # Create training environment (will inherit injected reward function)
         logger.info("[stage] constructing training env ...")
@@ -495,23 +525,35 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         logger.info("[stage] training env constructed with injected reward")
 
         # Note: Do NOT call env.reset() here - let the algorithm handle it properly
-        
 
-        # Create BPTT algorithm
-        logger.info("[stage] instantiating BPTT algorithm ...")
-        from algorithms.BPTT_series.BPTT import BPTT
+
+        # Dynamically import and instantiate algorithm
+        logger.info(f"[stage] instantiating {algorithm.upper()} algorithm ...")
+
+        if algorithm == "bptt":
+            from algorithms.BPTT_series.BPTT import BPTT
+            alg_class = BPTT
+        elif algorithm == "ppo":
+            from VisFly.utils.algorithms.PPO import PPO
+            alg_class = PPO
+        elif algorithm == "shac":
+            from algorithms.BPTT_series.SHAC import SHAC
+            alg_class = SHAC
+        else:
+            # This should never happen due to earlier check
+            raise ValueError(f"Unsupported algorithm: {algorithm}")
 
         alg_params["env"] = env
         alg_params.setdefault("policy", "SimplePolicy")
-        
+
         # Add TensorBoard logging support
         tensorboard_dir = Path(output_dir) / "tensorboard"
         tensorboard_dir.mkdir(exist_ok=True)
         alg_params["tensorboard_log"] = str(tensorboard_dir)
         logger.info(f"TensorBoard logs will be saved to: {tensorboard_dir}")
-        
-        model = BPTT(**alg_params)
-        logger.info("[stage] BPTT algorithm instantiated")
+
+        model = alg_class(**alg_params)
+        logger.info(f"[stage] {algorithm.upper()} algorithm instantiated")
 
         # Train
         logger.info(f"[stage] starting training for {train_steps} steps ...")
@@ -552,9 +594,6 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         logger.info("[stage] eval env constructed (inherits injected reward from class)")
 
         # Run evaluation episodes with detailed statistics
-        import numpy as np
-        import torch as th
-
         requested_eval_episodes = int(eval_episodes)
         eval_runs = max(1, requested_eval_episodes)  # Ensure at least 1 episode
         logger.info(
@@ -623,10 +662,12 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
                     reward_value = float(reward)
                 episode_reward += reward_value
 
+                # Continue episode until all agents are done (not just any agent)
+                # This allows remaining agents to continue even if one agent fails
                 if isinstance(done_arr, (np.ndarray, list)):
-                    done_flag = bool(np.any(done_arr))
+                    done_flag = bool(np.all(done_arr))
                 elif isinstance(done_arr, th.Tensor):
-                    done_flag = bool(done_arr.any().item())
+                    done_flag = bool(done_arr.all().item())
                 else:
                     done_flag = bool(done_arr)
 

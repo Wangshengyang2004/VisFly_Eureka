@@ -13,6 +13,10 @@ import subprocess
 import signal
 import tempfile
 import threading
+import time
+import yaml
+import shutil
+import concurrent.futures
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -21,6 +25,7 @@ import torch
 from .models import RewardFunctionResult
 from ..utils.gpu_monitor import EnhancedGPUMonitor
 from ..utils.gpu_monitor_dynamic import DynamicGPUResourceManager
+from ..utils.tensorboard_utils import find_tensorboard_logdir
 
 
 class SubprocessRewardEvaluator:
@@ -175,7 +180,6 @@ class SubprocessRewardEvaluator:
             env_name = env_class_path.split('.')[-2].lower().replace('env', '')
             alg_cfg_path = project_root / "configs" / "algs" / env_name / f"{algorithm}.yaml"
 
-            import yaml
             with open(alg_cfg_path, 'r') as f:
                 alg_cfg = yaml.safe_load(f)
             if "algorithm" not in alg_cfg:
@@ -245,38 +249,37 @@ class SubprocessRewardEvaluator:
                     env=subprocess_env,
                     preexec_fn=os.setsid  # start new process group (POSIX)
                 )
-                
+
                 # Track progress for heartbeat
-                import time as time_module
-                last_heartbeat = time_module.time()
+                last_heartbeat = time.time()
                 heartbeat_interval = 30  # seconds
                 
-                # Save stdout/stderr to files with selective logging
+                # Save stdout/stderr to files, selectively forward important messages to console
                 def stream_output(pipe, file_handle, prefix):
                     nonlocal last_heartbeat
                     for line in iter(pipe.readline, ''):
                         file_handle.write(line)
                         file_handle.flush()
-                        # Selective logging: escalate errors, surface training boundaries, ignore noisy metrics
+                        
                         line_stripped = line.strip()
                         upper = line_stripped.upper()
-                        if any(k in upper for k in ["ERROR", "FAILED"]):
-                            self.logger.error(f"[{identifier}] {line_stripped}")
-                        elif (
-                            'STARTING TRAINING' in upper
-                            or 'TRAINING COMPLETED' in upper
-                            or 'EVALUATION COMPLETED' in upper
-                        ):
-                            self.logger.info(f"[{identifier}] {line_stripped}")
-                        elif (
-                            'SUCCESS' in upper
-                            and 'SUCCESS_RATE' not in upper
-                            and 'SUCCESS RATE' not in upper
-                        ):
-                            self.logger.info(f"[{identifier}] {line_stripped}")
                         
-                        # Periodic heartbeat to show progress
-                        current_time = time_module.time()
+                        # Log only key milestones (not all [stage] messages)
+                        if any(k in upper for k in [
+                            'STARTING TRAINING', 'TRAINING COMPLETED', 
+                            'EVALUATION COMPLETED'
+                        ]):
+                            self.logger.info(f"[{identifier}] {line_stripped}")
+                        # Log critical errors (but skip metric names containing "error")
+                        elif any(k in upper for k in ["EXCEPTION", "TRACEBACK", "FAILED"]):
+                            self.logger.warning(f"[{identifier}] {line_stripped}")
+                        elif "ERROR" in upper:
+                            # Skip common non-critical "error" mentions in metric names
+                            if not any(skip in upper for skip in ["ERROR_MEAN", "ERROR_R", "POS_ERROR", "_ERROR"]):
+                                self.logger.warning(f"[{identifier}] {line_stripped}")
+
+                        # Periodic heartbeat to show progress (debug level)
+                        current_time = time.time()
                         if current_time - last_heartbeat > heartbeat_interval:
                             self.logger.debug(f"[{identifier}] Training in progress...")
                             last_heartbeat = current_time
@@ -342,11 +345,10 @@ class SubprocessRewardEvaluator:
                 # Save the reward function
                 with open(eval_output_dir / "reward_function.py", 'w') as f:
                     f.write(reward_code)
-                
+
                 self.logger.info(f"Saved training outputs to {eval_output_dir}")
-                
+
                 # Find the correct tensorboard log directory (handles nested structures)
-                from quadro_llm.utils.tensorboard_utils import find_tensorboard_logdir
                 log_dir_path = find_tensorboard_logdir(str(eval_output_dir))
                 if not log_dir_path:
                     log_dir_path = str(eval_output_dir)  # Fallback to output dir
@@ -436,8 +438,6 @@ class SubprocessRewardEvaluator:
         """
         Evaluate multiple reward functions in parallel subprocesses.
         """
-        import concurrent.futures
-
         results_map: dict[int, RewardFunctionResult] = {}
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
@@ -481,9 +481,8 @@ class SubprocessRewardEvaluator:
         """Clean up temporary directory and GPU monitoring"""
         # EnhancedGPUMonitor doesn't need explicit stop
         pass
-            
+
         try:
-            import shutil
             if self.temp_dir.exists():
                 shutil.rmtree(self.temp_dir)
         except Exception as e:

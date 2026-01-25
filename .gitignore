@@ -2,11 +2,13 @@
 # VisFly/  # Commented out - VisFly is now a submodule
 
 # Backup/Reference directories
-backup/Eureka/
+backup/
+
 
 # Documentation files (local notes, not for version control)
 CLAUDE.md
 
+.cursor/
 # Python
 __pycache__/
 *.py[cod]
@@ -152,6 +154,8 @@ secrets.json
 api_keys.txt
 api_keys.yaml
 configs/api_keys.yaml
+configs/agent/*.yaml
+!configs/agent/*.example.yaml
 configs/llm/*_local.yaml
 configs/llm/*_private.yaml
 

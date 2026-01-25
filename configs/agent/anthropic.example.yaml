@@ -1,0 +1,7 @@
+# Anthropic Claude Agent Configuration
+# Copy this to anthropic.yaml and set api_key or api_key_env
+agent:
+  base_url: "https://api.anthropic.com"
+  model: "claude-sonnet-4-20250514"
+  api_key_env: "ANTHROPIC_API_KEY"
+  timeout_ms: 600000

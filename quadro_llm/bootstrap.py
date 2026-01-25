@@ -8,8 +8,10 @@ here (composition root helpers).
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -32,14 +34,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def load_environment_class(env_name: str):
     """
     Load environment class by name.
-    
+
     This function ensures proper package initialization before importing
     environment classes to avoid relative import issues.
     """
-    import sys
-    from pathlib import Path
-    import importlib.util
-    
     # Ensure project root is in sys.path for proper imports
     project_root = Path(__file__).resolve().parent.parent
     if str(project_root) not in sys.path:
@@ -48,15 +46,11 @@ def load_environment_class(env_name: str):
     # Initialize VisFly package first to avoid relative import issues
     # This is needed because envs/*.py files import from VisFly, which uses
     # relative imports that require the package to be properly initialized
-    try:
-        # Import VisFly as a package to initialize its structure
-        import VisFly  # noqa: F401
-        # Import key submodules to ensure they're initialized
-        import VisFly.utils  # noqa: F401
-        import VisFly.envs.base  # noqa: F401
-    except ImportError:
-        # VisFly might not be available or already imported
-        pass
+    # Import VisFly as a package to initialize its structure
+    import VisFly  # noqa: F401
+    # Import key submodules to ensure they're initialized
+    import VisFly.utils  # noqa: F401
+    import VisFly.envs.base  # noqa: F401
     
     env_registry = {
         "flip": ("envs.FlipEnv", "FlipEnv"),
@@ -90,7 +84,7 @@ def load_environment_class(env_name: str):
             spec.loader.exec_module(module)
             env_class = getattr(module, class_name)
             return env_class
-        except Exception as e:
+        except (FileNotFoundError, ImportError, AttributeError) as e:
             # Fallback to normal import if file-based loading fails
             try:
                 module = importlib.import_module(module_name)
@@ -227,15 +221,13 @@ def load_llm_config(cfg: DictConfig, opt_config: OptimizationConfig = None) -> d
     # Load prompt config from main config (moved from individual LLM configs)
     if "prompt" in cfg:
         prompt_cfg = OmegaConf.to_container(cfg.prompt, resolve=True)
-        include_api_doc = prompt_cfg.get("include_api_doc")
-        if include_api_doc is not None:
-            llm_config["include_api_doc"] = bool(include_api_doc)
+        # These fields are defined in configs/config.yaml and should be present
+        llm_config["include_api_doc"] = bool(prompt_cfg["include_api_doc"])
+        llm_config["include_human_reward"] = bool(prompt_cfg["include_human_reward"])
+        # api_doc_path is optional and may not be in config
         api_doc_path = prompt_cfg.get("api_doc_path")
         if api_doc_path:
             llm_config["api_doc_path"] = api_doc_path
-        include_human_reward = prompt_cfg.get("include_human_reward")
-        if include_human_reward is not None:
-            llm_config["include_human_reward"] = bool(include_human_reward)
 
     # Add history_window_size from optimization config
     if opt_config is not None and hasattr(opt_config, "history_window_size"):
@@ -246,19 +238,14 @@ def load_llm_config(cfg: DictConfig, opt_config: OptimizationConfig = None) -> d
 
 def create_optimization_config(cfg: DictConfig) -> OptimizationConfig:
     """Create optimization configuration from config."""
-    record_video = bool(getattr(cfg.optimization, "record_video", False))
     return OptimizationConfig(
         iterations=cfg.optimization.iterations,
         samples=cfg.optimization.samples,
         algorithm=cfg.optimization.algorithm,
         evaluation_episodes=cfg.optimization.evaluation_episodes,
-        record_video=record_video,
-        gpu_memory_requirement_mb=getattr(
-            cfg.optimization, "gpu_memory_requirement_mb", 2048
-        ),
-        history_window_size=getattr(
-            cfg.optimization, "history_window_size", 2
-        ),
+        record_video=cfg.optimization.record_video,
+        gpu_memory_requirement_mb=cfg.optimization.gpu_memory_requirement_mb,
+        history_window_size=cfg.optimization.history_window_size,
     )
 
 
@@ -317,6 +304,9 @@ def create_eureka_controller(cfg: DictConfig, logger: logging.Logger) -> EurekaV
 
     # Check if coefficient tuning mode is enabled
     use_coefficient_tuning = bool(getattr(cfg.optimization, "use_coefficient_tuning", False))
+    
+    # Get agent config for autonomous voter
+    agent_config = getattr(cfg, "agent", None)
 
     return EurekaVisFly(
         env_class=env_class,
@@ -327,6 +317,7 @@ def create_eureka_controller(cfg: DictConfig, logger: logging.Logger) -> EurekaV
         device=execution_device,
         max_workers=max_workers,
         eval_env_config=eval_env_config,
+        agent_config=agent_config,
         use_coefficient_tuning=use_coefficient_tuning,
     )
 
@@ -352,11 +343,9 @@ def create_mode(
     if mode_name == "temptuner":
         # Enable coefficient tuning for temptuner mode
         if not hasattr(cfg.optimization, "use_coefficient_tuning"):
-            from omegaconf import OmegaConf
             OmegaConf.set_struct(cfg, False)
             cfg.optimization.use_coefficient_tuning = True
         controller = create_eureka_controller(cfg, logger)
-        from .modes.temptuner_mode import TempTunerMode
         return TempTunerMode(controller=controller, output_dir=output_dir)
 
     raise ValueError(f"Unknown mode: {mode_name}")

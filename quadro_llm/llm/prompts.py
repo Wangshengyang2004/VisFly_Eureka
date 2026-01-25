@@ -16,7 +16,8 @@ def create_system_prompt() -> str:
         "each VisFly task.\n\n"
         "Authoritative guidance:\n"
         "- Operate entirely in PyTorch; never fall back to NumPy or Python math.\n"
-        "- Return a 1-D tensor of length `self.num_agent` on `self.device`.\n"
+        "- Return a 1-D tensor of length `self.num_agent` on `self.device`, OR optionally return a dict with a 'reward' key containing the main reward tensor (and optionally other keys for decomposed reward components).\n"
+        "- If returning a dict, it must contain a 'reward' key with the main reward tensor. Other keys are optional and can contain decomposed reward components (e.g., 'vel_r', 'ang_r', 'acc_r').\n"
         "- Scale rewards to reasonable values for stable training.\n"
         "- SHAC/BPTT REQUIRE you to clone dynamics tensors: always write `(self.velocity - 0)`, `(self.angular_velocity - 0)`, `(self.envs.acceleration - 0)`, and `(self.envs.angular_acceleration - 0)` before using them in calculations. Apply the same `- 0` trick to any tensor whose name contains `vel`, `accel`, or `ang`.\n"
         "- Avoid in-place edits, boolean indexing assignment, or constructing new tensors with mismatched devices.\n"
@@ -189,6 +190,7 @@ def create_user_prompt(
 
     prompt_parts.append(
         "\nReturn only the complete `def get_reward(self, predicted_obs=None) -> torch.Tensor` implementation. "
+        "You may return a torch.Tensor directly, or optionally return a dict with a 'reward' key (and optionally other keys for decomposed components). "
         "Rely strictly on the documented attributes above—omit any term that would require guessing or `hasattr` checks. "
         "Keep the code concise with minimal comments."
     )

@@ -3,7 +3,8 @@
 
 defaults:
   - task: hover
-  - llm: gpt-5-nano
+  - llm: test
+  - agent: minimax
   - mode: eureka
   - api_keys
   - _self_
@@ -16,7 +17,7 @@ pipeline:
   
 # Optimization parameters
 optimization:
-  iterations: 5           # Number of optimization iterations
+  iterations: 15           # Number of optimization iterations
   samples: 15          # Reward functions per iteration
   algorithm: "bptt"      # Training algorithm: "bptt", "ppo", or "shac"
   evaluation_episodes: 1  # Episodes for final evaluation
@@ -27,7 +28,7 @@ optimization:
   # 0 = Eureka-style: only keep current iteration (aggressive pruning)
   # 1 = keep last iteration (similar to LaRes)
   # 2+ = keep last N iterations (balanced approach, recommended: 2)
-  history_window_size: 2
+  history_window_size: 4
 
 training:
   # Global overrides (optional)

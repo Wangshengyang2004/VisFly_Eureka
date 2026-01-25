@@ -406,7 +406,7 @@ class LLMEngine:
     def _generate_coefficient_texts_with_n(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate coefficient texts using n parameter."""
         texts = []
-        batch_size = min(samples, 8)
+        batch_size = min(samples, 5)  # Limit to 5 to avoid token limit issues
         remaining = samples
         
         while remaining > 0:
@@ -485,8 +485,6 @@ class LLMEngine:
     
     def _generate_coefficient_texts_async(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate coefficient texts asynchronously."""
-        import asyncio
-        
         async def generate_single_coeff_async(session_id: int) -> Optional[str]:
             try:
                 request_params = self._build_request_params(messages)
@@ -531,7 +529,7 @@ class LLMEngine:
     def _generate_with_n_parameter(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate multiple samples using API's n parameter (OpenAI style)."""
         reward_functions = []
-        batch_size = min(samples, 8)
+        batch_size = min(samples, 5)  # Limit to 5 to avoid token limit issues
         remaining = samples
 
         while remaining > 0:
@@ -774,8 +772,6 @@ class LLMEngine:
     
     def _generate_async(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate samples asynchronously."""
-        import asyncio
-        
         async def generate_single_async(session_id: int) -> Optional[str]:
             try:
                 request_params = self._build_request_params(messages)

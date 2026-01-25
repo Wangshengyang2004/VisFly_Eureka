@@ -41,11 +41,11 @@ algorithm:
   learning_rate:
     class: cosine
     kwargs:
-      initial: 0.0002
-      final: 0.00005
+      initial: 0.0001
+      final: 0.00002
       period: 0.1
 
-  horizon: 192
+  horizon: 384
   tau: 0.005
   gamma: 0.99
   device: cuda
@@ -59,7 +59,7 @@ algorithm:
 #  buffer_size: 40000
 
 learn:
-  total_timesteps: 20000000
+  total_timesteps: 120000000
   # log_interval: 20
 
 test:

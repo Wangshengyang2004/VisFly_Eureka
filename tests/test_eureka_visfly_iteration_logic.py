@@ -27,7 +27,16 @@ sys.modules['openai'].OpenAI = Mock
 # Now import the modules we need
 from quadro_llm.eureka_visfly import EurekaVisFly
 from quadro_llm.core.models import OptimizationConfig, TrainingResult, RewardFunctionResult
-from quadro_llm.core.elite_voter import EliteVoterResult
+from dataclasses import dataclass
+from typing import Optional
+
+# Local EliteVoterResult for testing (elite_voter.py has been removed)
+@dataclass
+class EliteVoterResult:
+    """Result from elite voter LLM agent"""
+    selected_index: int
+    reasoning: str
+    confidence: Optional[float] = None
 
 
 class MockEnv:
@@ -183,7 +192,6 @@ def mock_eureka_visfly():
     
     # Use patch to replace the classes before instantiation
     with patch('quadro_llm.eureka_visfly.LLMEngine', MockLLMEngine), \
-         patch('quadro_llm.eureka_visfly.EliteVoter', MockEliteVoter), \
          patch('quadro_llm.eureka_visfly.SubprocessRewardEvaluator', MockSubprocessEvaluator), \
          patch('quadro_llm.eureka_visfly.extract_environment_context_minimal', return_value="Mock context"):
         
@@ -205,6 +213,10 @@ def mock_eureka_visfly():
             eval_env_config={"num_envs": 1},
             use_coefficient_tuning=False,
         )
+        
+        # Add mock elite_voter for backward compatibility with tests
+        # (actual code uses agent_voter, but tests still reference elite_voter)
+        eureka.elite_voter = MockEliteVoter(eureka.llm)
         
         yield eureka
 
