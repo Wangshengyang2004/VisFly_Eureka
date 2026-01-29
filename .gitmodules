@@ -5,3 +5,4 @@
 [submodule "algorithms/BPTT_series"]
 	path = algorithms/BPTT_series
 	url = https://github.com/Fanxing-LI/BPTT_series.git
+	branch = main
