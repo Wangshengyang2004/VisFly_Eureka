@@ -56,14 +56,17 @@ def load_environment_class(env_name: str):
         "flip": ("envs.FlipEnv", "FlipEnv"),
         "hover": ("envs.HoverEnv", "HoverEnv"),  # Use envs/ not VisFly/envs/ (VisFly version has get_success always returning False)
         "navigation": ("envs.NavigationEnv", "NavigationEnv"),  # Use envs/ not VisFly/envs/
+        "landing": ("envs.VisLanding", "VisLandingEnv"),
+        "vis_landing": ("envs.VisLanding", "VisLandingEnv"),
         "racing": ("VisFly.envs.RacingEnv", "RacingEnv"),
         "tracking": ("VisFly.envs.ObjectTrackingEnv", "ObjectTrackingEnv"),
     }
 
-    if env_name not in env_registry:
+    env_key = str(env_name).strip().lower()
+    if env_key not in env_registry:
         raise ValueError(f"Unknown environment: {env_name}")
 
-    module_name, class_name = env_registry[env_name]
+    module_name, class_name = env_registry[env_key]
     
     # For envs.* modules, use file-based loading to avoid import conflicts
     if module_name.startswith("envs."):

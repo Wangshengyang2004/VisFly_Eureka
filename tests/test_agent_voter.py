@@ -155,10 +155,10 @@ async def run_agent_voter(
     
     prompt = f"""Select the best reward function candidate for a drone flip task.
 
-Explore {train_dir} and analyze each sample's:
+Perform a deep analysis for this task. Explore {train_dir} and analyze each sample using:
 - result.json (metrics)
 - trajectories/*.npz (trajectory data)
-- tensorboard/ logs (training curves, optional)
+- tensorboard/ logs (training curves) — parse and use these for convergence and reward-curve comparison; include in your analysis.
 
 Write your final decision to {result_file} as JSON:
 {{"selected_index": <int>, "selected_identifier": "<sampleN>", "reasoning": "<why>", "confidence": <0-1>, "analysis_summary": "<overview>"}}"""

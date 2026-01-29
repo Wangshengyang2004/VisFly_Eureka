@@ -111,8 +111,19 @@ def snapshot_env(env: Any) -> Dict[str, np.ndarray]:
     }
 
 
-def plot_trajectory(trajectory: List[Dict[str, np.ndarray]], output: Path, episode_idx: int, logger: logging.Logger) -> None:
-    """Plot trajectory using 3x3 subplot layout with VisFly FigFashion helper"""
+def _eval_artifact_basename(num_runs: int, episode_idx: int) -> str:
+    """Basename for eval artifacts: 'eval' when a single run, else 'episode_XXX'."""
+    return "eval" if num_runs == 1 else f"episode_{episode_idx:03d}"
+
+
+def plot_trajectory(
+    trajectory: List[Dict[str, np.ndarray]],
+    output: Path,
+    episode_idx: int,
+    logger: logging.Logger,
+    plot_basename: Optional[str] = None,
+) -> None:
+    """Plot trajectory using 3x3 subplot layout with VisFly FigFashion helper."""
     positions = np.stack([step["position"] for step in trajectory])
     velocities = np.stack([step["velocity"] for step in trajectory])
     orientations = np.stack([step.get("orientation", np.zeros((1, 4))) for step in trajectory])
@@ -285,7 +296,8 @@ def plot_trajectory(trajectory: List[Dict[str, np.ndarray]], output: Path, episo
         axes_flat[8].set_title("Position Magnitude")
 
     plt.tight_layout()
-    fig_path = output / f"trajectory_episode_{episode_idx:03d}.png"
+    name = plot_basename if plot_basename is not None else f"episode_{episode_idx:03d}"
+    fig_path = output / f"trajectory_{name}.png"
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved trajectory plot: {fig_path}")
@@ -503,16 +515,18 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         
         logger.info(f"Training configuration: {train_steps} timesteps, log_interval={log_interval}")
         
-        # Keep devices separate - env and algorithm use their configured devices
+        # Keep devices separate - env and algorithm use their configured devices.
+        # When parent fallback to CPU (GPU full), effective_algorithm_device is set in config.
         env_device = env_config["device"]
-        alg_device = alg_params["device"]
+        alg_device = optimization_config.get("effective_algorithm_device") or alg_params["device"]
+        alg_params["device"] = alg_device
         logger.info(f"Environment device: {env_device}, Algorithm device: {alg_device}")
 
-        # Configure requires_grad based on algorithm type
-        # BPTT and SHAC require gradients; PPO does not
+        # Configure requires_grad and tensor_output based on algorithm type
+        # BPTT and SHAC require gradients and tensor output (droneGymEnv enforces requires_grad -> tensor_output)
         if algorithm in ("bptt", "shac"):
-            env_config = {**env_config, "requires_grad": True}
-            logger.info(f"requires_grad=True for {algorithm.upper()}")
+            env_config = {**env_config, "requires_grad": True, "tensor_output": True}
+            logger.info(f"requires_grad=True, tensor_output=True for {algorithm.upper()}")
         elif algorithm == "ppo":
             env_config = {**env_config, "requires_grad": False}
             logger.info("requires_grad=False for PPO")
@@ -559,26 +573,30 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
         logger.info(f"[stage] starting training for {train_steps} steps ...")
         t0 = time.time()
         
-        # Track GPU memory
+        # Track GPU memory (only on CUDA)
         peak_memory_mb = 0
-        gpu_id = int(alg_device.split(":")[1]) if ":" in alg_device else 0
-        initial_memory = torch.cuda.memory_allocated(gpu_id) // (1024**2)  # MB
-        torch.cuda.reset_peak_memory_stats(gpu_id)
-        logger.info(f"Initial GPU memory: {initial_memory}MB")
-        
+        device_str = str(alg_device).lower()
+        use_cuda = torch.cuda.is_available() and "cuda" in device_str
+        if use_cuda:
+            gpu_id = int(device_str.split(":")[1]) if ":" in device_str else 0
+            torch.cuda.reset_peak_memory_stats(gpu_id)
+
         # Prepare training arguments
         train_args = {"total_timesteps": int(train_steps)}
         if log_interval is not None:
             train_args["log_interval"] = log_interval
-        
+
         # Use getattr to avoid static type check issues
         getattr(model, "learn")(**train_args)
         training_time = time.time() - t0
-        
+
         # Get peak GPU memory usage
-        peak_memory_mb = torch.cuda.max_memory_allocated(gpu_id) // (1024**2)  # MB
-        final_memory = torch.cuda.memory_allocated(gpu_id) // (1024**2)  # MB
-        logger.info(f"Peak GPU memory: {peak_memory_mb}MB, Final: {final_memory}MB")
+        if use_cuda:
+            peak_memory_mb = torch.cuda.max_memory_allocated(gpu_id) // (1024**2)
+            final_memory = torch.cuda.memory_allocated(gpu_id) // (1024**2)
+            logger.info(f"Peak GPU memory: {peak_memory_mb}MB, Final: {final_memory}MB")
+        else:
+            logger.info(f"Training completed in {training_time:.2f}s (CPU mode, no GPU stats)")
         
         logger.info(f"Training completed in {training_time:.2f}s")
         
@@ -637,7 +655,8 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
             episode_reward = 0.0
             last_info = None
             video_writer = None
-            video_path = video_dir / f"episode_{episode_idx:03d}.mp4" if video_enabled else None
+            artifact_basename = _eval_artifact_basename(eval_runs, episode_idx)
+            video_path = video_dir / f"{artifact_basename}.mp4" if video_enabled else None
 
             # Initialize trajectory tracking
             trajectory = [snapshot_env(env_eval)]
@@ -686,12 +705,12 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
                 logger.info(f"[video] Saved {video_path}")
 
             # Create trajectory plot for this episode
-            plot_trajectory(trajectory, plots_dir, episode_idx, logger)
+            plot_trajectory(trajectory, plots_dir, episode_idx, logger, plot_basename=artifact_basename)
 
             # Save trajectory data as npz file for LLM analysis
             trajectory_dir = Path(output_dir) / "trajectories"
             trajectory_dir.mkdir(parents=True, exist_ok=True)
-            trajectory_npz_path = trajectory_dir / f"episode_{episode_idx:03d}.npz"
+            trajectory_npz_path = trajectory_dir / f"{artifact_basename}.npz"
             
             # Convert trajectory list to numpy arrays
             trajectory_data = {
@@ -742,7 +761,8 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
                 final_distance = float(distance_tensor.mean().item())
                 final_distances.append(final_distance)
             else:
-                final_distances.append(float("nan"))
+                final_distance = float("nan")
+                final_distances.append(final_distance)
 
             time_truncated = False
             if last_info:
@@ -828,17 +848,6 @@ def evaluate_main(config_path: Path, output_path: Path) -> int:
             "episode_statistics": episode_details,
             "video_paths": saved_videos,
         }
-
-        stats_payload = {
-            "identifier": identifier,
-            "aggregate_statistics": aggregate_statistics,
-            "episode_statistics": episode_details,
-            "video_paths": saved_videos,
-        }
-
-        stats_file = Path(output_dir) / "evaluation_stats.json"
-        with open(stats_file, "w") as stats_f:
-            json.dump(stats_payload, stats_f, indent=2)
 
         with open(output_path, "w") as f:
             json.dump(result, f, indent=2)

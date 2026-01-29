@@ -42,12 +42,13 @@ Sensors
 - `"semantic"`: semantic segmentation (if available).
 - `self.visual`: bool indicating if visual sensors are enabled.
 
-Orientation Utilities
----------------------
-- `self.direction`: forward direction vector (body x-axis in world frame).
-- `self.R`: rotation matrix (3x3).
-- `self.xz_axis`: XZ axis orientation.
-- Use `self.direction` for heading alignment rewards.
+Orientation and Quaternion (VisFly built-in)
+---------------------------------------------
+VisFly uses Quaternion (utils/maths.py) internally. For orientation/quaternion, use only these attributes; do not import torchvision or other libraries for quaternion math.
+- `self.orientation`: tensor `(num_agent, 4)` quaternions; order `[w, x, y, z]`. There is no `self.rotation` matrix attribute.
+- `self.direction`: forward (body x-axis) unit vector in world frame. Shape `(num_agent, 3)`.
+- `self.envs.dynamics.R`: rotation matrix from body to world. Shape depends on backend (e.g. (3, 3) or (3, 3, num_agent)).
+- `self.envs.dynamics.xz_axis`: XZ axis orientation (forward and up). Shape depends on backend.
 
 Task-Specific Variables
 -----------------------
@@ -58,8 +59,8 @@ These variables may be available depending on the specific task environment:
 
 General Safety Notes
 --------------------
-- Only touch attributes listed in this document or surfaced directly by the provided environment stub.
-- Do not guard attribute access with `hasattr` / `if attr exists` branches—omit uncertain terms.
+- Omit terms not listed here or not surfaced by the environment stub; do not guess.
+- Do not guard attribute access with `hasattr` / `if attr exists` branches.
 - Always operate on clones or expressions like `(tensor - 0)` to avoid modifying simulator buffers.
 - Avoid python floats inside `torch.where`; pass scalar floats, not new tensors with device mismatches.
 - Clamp divisions with small epsilon (`1e-6` or `1e-8`) to keep gradients finite.
@@ -71,7 +72,6 @@ Useful Scalars
 --------------
 - `self.envs.dynamics.ctrl_dt`: control timestep (seconds).
 - `self.envs.dynamics.action_type`: string (`"bodyrate"`, `"velocity"`, etc.) if reward depends on control mode.
-- `self.is_eval`: evaluation flag for deterministic shaping (in some envs).
 
 Coding Checklist
 ----------------
@@ -79,5 +79,3 @@ Coding Checklist
 - Most state tensors have shape `(num_agent, 3)` or `(num_agent, 4)`.
 - Use `.norm(dim=1)` to reduce `(num_agent, 3)` tensors to `(num_agent,)`.
 - Compose from torch ops only; no numpy/scipy inside rewards.
-- Reuse helper vectors (`self.direction`, `self.collision_vector`) rather than re-deriving heavy geometry.
-- Logically separate reward terms for distance, smoothness, safety, and bonuses.

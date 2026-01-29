@@ -18,7 +18,7 @@ pipeline:
 # Optimization parameters
 optimization:
   iterations: 15           # Number of optimization iterations
-  samples: 15          # Reward functions per iteration
+  samples: 5          # Reward functions per iteration
   algorithm: "bptt"      # Training algorithm: "bptt", "ppo", or "shac"
   evaluation_episodes: 1  # Episodes for final evaluation
   record_video: true       # Enable video recording during evaluation

@@ -13,7 +13,7 @@ env:
     cfg: "drone_d435i"
   visual: true
   requires_grad: true
-  tensor_output: false
+  tensor_output: true   # BPTT needs tensor_output True when requires_grad True (droneGymEnv checks this)
   device: "cpu"
   random_kwargs:
     state_generator:

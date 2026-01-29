@@ -84,7 +84,7 @@ class EurekaPipeline:
 
         # Analyze results and create report
         final_report = self._create_optimization_report(
-            results, execution_time
+            results, execution_time, best_reward_result
         )
 
         # Create best_sample symlink pointing directly to train folder
@@ -108,7 +108,7 @@ class EurekaPipeline:
         return final_report
 
     def _create_optimization_report(
-        self, results: List, execution_time: float
+        self, results: List, execution_time: float, best_reward_result: Optional[RewardFunctionResult] = None
     ) -> OptimizationReport:
         """Create optimization report from results"""
 
@@ -117,10 +117,21 @@ class EurekaPipeline:
         total_samples = len(results)
         successful_samples = len(successful_results)
 
-        # Best performance
+        # Best performance - use passed-in best_reward_result
         best_performance = {}
-        if successful_results:
-            best = successful_results[0]  # Results are already sorted by score
+        best_code = None
+        if best_reward_result:
+            best_performance = {
+                "success_rate": best_reward_result.success_rate,
+                "episode_length": best_reward_result.episode_length,
+                "training_time": best_reward_result.training_time,
+                "final_reward": best_reward_result.final_reward,
+                "score": best_reward_result.success_rate,
+            }
+            best_code = best_reward_result.reward_code
+        elif successful_results:
+            # Fallback for backward compatibility
+            best = successful_results[0]
             best_performance = {
                 "success_rate": best.success_rate,
                 "episode_length": best.episode_length,
@@ -128,6 +139,7 @@ class EurekaPipeline:
                 "final_reward": best.final_reward,
                 "score": best.success_rate,
             }
+            best_code = best.reward_code
 
         # Create iteration history from eureka optimization history
         iteration_history = []
@@ -178,9 +190,7 @@ class EurekaPipeline:
             execution_time=execution_time,
             output_directory=str(self.output_dir),
             iteration_history=iteration_history,
-            best_reward_code=successful_results[0].reward_code
-            if successful_results
-            else None,
+            best_reward_code=best_code,
         )
 
     def _save_outputs(self, report: OptimizationReport):

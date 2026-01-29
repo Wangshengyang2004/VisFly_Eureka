@@ -12,12 +12,13 @@ from omegaconf import DictConfig
 
 @dataclass
 class AgentVoterResult:
-    """Result from agent voter"""
+    """Result from agent voter."""
     selected_index: int
     selected_identifier: str
     reasoning: str
     confidence: float
     analysis_summary: str
+    candidate_count: int
     conversation: Optional[List[Dict]] = None
 
 
@@ -111,10 +112,10 @@ class AgentVoter:
         
         prompt = f"""Select the best reward function candidate for the task: {task_description}.
 
-Explore {train_dir} and analyze each sample's:
+Perform a deep analysis for this task. Explore {train_dir} and analyze each sample using:
 - result.json (metrics)
 - trajectories/*.npz (trajectory data)
-- tensorboard/ logs (training curves, optional)
+- tensorboard/ logs (training curves) — parse and use these for convergence and reward-curve comparison; include in your analysis.
 
 Write your final decision to {result_file} as JSON:
 {{"selected_index": <int>, "selected_identifier": "<sampleN>", "reasoning": "<why>", "confidence": <0-1>, "analysis_summary": "<overview>"}}"""
@@ -146,17 +147,28 @@ Write your final decision to {result_file} as JSON:
             json.dump({"prompt": prompt, "messages": conversation}, f, indent=2, ensure_ascii=False)
         self.logger.info(f"Saved conversation to {conv_file}")
         
-        # Read result
+        # Read result written by the agent
         with open(result_file) as f:
             result_data = json.load(f)
-        
+
+        candidate_count = len(candidates)
+        agent_summary = (result_data.get("analysis_summary") or "").strip()
+        analysis_summary = f"Analyzed {candidate_count} candidates. {agent_summary}" if agent_summary else f"Analyzed {candidate_count} candidates."
+
+        # Persist with candidate_count and normalized summary for verification
+        result_data["candidate_count"] = candidate_count
+        result_data["analysis_summary"] = analysis_summary
+        with open(result_file, "w") as f:
+            json.dump(result_data, f, indent=2, ensure_ascii=False)
+
         return AgentVoterResult(
             selected_index=result_data["selected_index"],
             selected_identifier=result_data["selected_identifier"],
             reasoning=result_data["reasoning"],
             confidence=result_data.get("confidence", 0.8),
-            analysis_summary=result_data.get("analysis_summary", ""),
-            conversation=conversation
+            analysis_summary=analysis_summary,
+            candidate_count=candidate_count,
+            conversation=conversation,
         )
     
     def _serialize_message(self, message) -> Dict[str, Any]:

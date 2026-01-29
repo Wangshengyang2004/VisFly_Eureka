@@ -1,0 +1,15 @@
+# Visual landing task configuration
+
+task:
+  name: "vis_landing"
+  category: "landing"
+  envs: "vis_landing"  # Use vis_landing env config (color sensor); landing.yaml uses depth and would cause KeyError 'color'
+
+  # Task description for LLM
+  description: >
+    Visual landing task.
+
+    The drone must:
+    1. Approach the landing target
+    2. Align with the landing pad
+    3. Descend smoothly and land within tolerance

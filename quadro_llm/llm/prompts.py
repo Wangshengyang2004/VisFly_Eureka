@@ -5,7 +5,10 @@ This module contains system and user prompts optimized for generating
 reward functions for VisFly drone environments.
 """
 
+import logging
 from typing import Dict, Any, Optional
+
+_logger = logging.getLogger(__name__)
 
 
 def create_system_prompt() -> str:
@@ -13,20 +16,10 @@ def create_system_prompt() -> str:
     return (
         "You are a reward engineer creating reinforcement-learning reward functions. "
         "Write a complete `def get_reward(self, predicted_obs=None) -> torch.Tensor` implementation that helps the policy master "
-        "each VisFly task.\n\n"
-        "Authoritative guidance:\n"
-        "- Operate entirely in PyTorch; never fall back to NumPy or Python math.\n"
-        "- Return a 1-D tensor of length `self.num_agent` on `self.device`, OR optionally return a dict with a 'reward' key containing the main reward tensor (and optionally other keys for decomposed reward components).\n"
-        "- If returning a dict, it must contain a 'reward' key with the main reward tensor. Other keys are optional and can contain decomposed reward components (e.g., 'vel_r', 'ang_r', 'acc_r').\n"
-        "- Scale rewards to reasonable values for stable training.\n"
-        "- SHAC/BPTT REQUIRE you to clone dynamics tensors: always write `(self.velocity - 0)`, `(self.angular_velocity - 0)`, `(self.envs.acceleration - 0)`, and `(self.envs.angular_acceleration - 0)` before using them in calculations. Apply the same `- 0` trick to any tensor whose name contains `vel`, `accel`, or `ang`.\n"
-        "- Avoid in-place edits, boolean indexing assignment, or constructing new tensors with mismatched devices.\n"
-        "- Use `torch.where`, `torch.clamp`, vector norms, and smooth penalties to combine reward terms.\n"
-        "- Orientation data is in `self.orientation`; there is no `self.rotation` matrix attribute.\n"
-        "- Make collision handling robust by reading `self.collision_dis` / `self.collision_vector` rather than raw sensor pixels; `self.collision_vector` already points from the drone toward the closest surface.\n"
-        "- Use only attributes shown in the environment stub or API reference. Fields like `self.action`, `self.actions`, or ad-hoc caches are not available.\n"
-        "- Do not guard attribute access with `hasattr` or `if ... exists` checks—omit uncertain terms instead of guessing.\n\n"
-        "Common pitfalls to avoid:\n"
+        "each VisFly task. Follow the API reference for return shape, available attributes, and gradient/safety rules.\n\n"
+        "Guidance:\n"
+        "- Scale rewards to reasonable values for stable training.\n\n"
+        "Pitfalls to avoid:\n"
         "- Do not call Torch APIs with invalid signatures (e.g., `torch.min(tensor, dim=int)`).\n"
         "- Do not instantiate tensors inside `torch.where` (use scalar literals).\n"
         "- Do not mix `_step_count` scalars directly with tensors without broadcasting helpers.\n"
@@ -122,8 +115,8 @@ def extract_human_reward(env_class) -> Optional[str]:
             return match.group(0).strip()
         
         return None
-    except Exception:
-        # Silently fail if extraction fails
+    except Exception as e:
+        _logger.warning("Failed to extract human reward from %s: %s", env_class, e)
         return None
 
 
@@ -176,7 +169,8 @@ def create_user_prompt(
         prompt_parts.append("```python")
         prompt_parts.append(human_reward_code.strip())
         prompt_parts.append("```")
-    
+        prompt_parts.append("(Optional reference; your implementation may differ in structure and weights.)")
+
     if elite_reward_code:
         prompt_parts.append("\nPrevious elite reward function (selected from last iteration):")
         prompt_parts.append("```python")
@@ -191,7 +185,6 @@ def create_user_prompt(
     prompt_parts.append(
         "\nReturn only the complete `def get_reward(self, predicted_obs=None) -> torch.Tensor` implementation. "
         "You may return a torch.Tensor directly, or optionally return a dict with a 'reward' key (and optionally other keys for decomposed components). "
-        "Rely strictly on the documented attributes above—omit any term that would require guessing or `hasattr` checks. "
         "Keep the code concise with minimal comments."
     )
 
@@ -211,7 +204,7 @@ Current reward has issues:
 
 Issues: {performance_issues}
 
-Fix these problems. Remember SHAC/BPTT gradient tips: use (self.velocity - 0), (self.angular_velocity - 0), (self.envs.acceleration - 0), and (self.envs.angular_acceleration - 0) for dynamics tensors.
+Fix these problems. Follow the API reference for gradient and safety rules.
 
 Keep the code concise with minimal comments.
 
@@ -247,7 +240,7 @@ def create_context_aware_prompt(
         )
 
     prompt_parts.append(
-        "\nRemember SHAC/BPTT: use (self.velocity - 0), (self.angular_velocity - 0), (self.envs.acceleration - 0), and (self.envs.angular_acceleration - 0) for dynamics tensors. Keep code concise.\n"
+        "\nFollow the API reference for gradient and safety rules. Keep code concise.\n"
         "Generate get_reward(self, predicted_obs=None):"
     )
 
@@ -267,7 +260,7 @@ def create_multi_objective_prompt(
         parts.append("Constraints: " + ", ".join(constraints))
 
     parts.append(
-        "\nBalance objectives with weights. Remember SHAC/BPTT: use (self.velocity - 0), (self.angular_velocity - 0), (self.envs.acceleration - 0), and (self.envs.angular_acceleration - 0) for dynamics tensors. Keep code concise.\n"
+        "\nBalance objectives with weights. Follow the API reference for gradient and safety rules. Keep code concise.\n"
         "Generate get_reward(self, predicted_obs=None):"
     )
 

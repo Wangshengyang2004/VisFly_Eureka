@@ -225,6 +225,14 @@ class SubprocessRewardEvaluator:
             else:
                 subprocess_env["CUDA_VISIBLE_DEVICES"] = ""
                 self.logger.debug(f"[{identifier}] Algorithm configured for CPU")
+
+            # When GPU allocation was used (including fallback to CPU), tell worker the effective device
+            if allocated_device is not None:
+                with open(config_file, "r") as f:
+                    config = json.load(f)
+                config.setdefault("optimization_config", {})["effective_algorithm_device"] = allocated_device
+                with open(config_file, "w") as f:
+                    json.dump(config, f, indent=2)
             
             subprocess_env.update({
                 "OMP_NUM_THREADS": str(torch.get_num_threads()),
@@ -274,8 +282,11 @@ class SubprocessRewardEvaluator:
                         elif any(k in upper for k in ["EXCEPTION", "TRACEBACK", "FAILED"]):
                             self.logger.warning(f"[{identifier}] {line_stripped}")
                         elif "ERROR" in upper:
-                            # Skip common non-critical "error" mentions in metric names
-                            if not any(skip in upper for skip in ["ERROR_MEAN", "ERROR_R", "POS_ERROR", "_ERROR"]):
+                            # Skip common non-critical "error" mentions in metric names and internal VisFly errors
+                            if not any(skip in upper for skip in [
+                                "ERROR_MEAN", "ERROR_R", "POS_ERROR", "_ERROR",
+                                "JSONSTLTYPES", "NAVMESH_INSTANCES"
+                            ]):
                                 self.logger.warning(f"[{identifier}] {line_stripped}")
 
                         # Periodic heartbeat to show progress (debug level)
