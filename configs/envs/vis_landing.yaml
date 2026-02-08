@@ -2,9 +2,11 @@ env:
   num_agent_per_scene: 128
   num_scene: 1
   max_episode_steps: 256
-  sensor_kwargs: []
+  sensor_kwargs: []  # VisLandingEnv provides default COLOR sensor
   scene_kwargs:
     path: "VisFly/datasets/visfly-beta/configs/scenes/garage_empty"
+    # Note: VisLandingEnv detects landing pad by grayscale < 70 (dark areas)
+    # If garage_empty lacks a visible pad, consider using garage_landing scene
   dynamics_kwargs:
     dt: 0.03
     ctrl_dt: 0.03

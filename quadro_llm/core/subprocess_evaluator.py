@@ -219,18 +219,24 @@ class SubprocessRewardEvaluator:
                     gpu_id = allocated_device.split(":")[1]
                     subprocess_env["CUDA_VISIBLE_DEVICES"] = gpu_id
                     self.logger.debug(f"[{identifier}] Allocated GPU {gpu_id}")
+                    # When CUDA_VISIBLE_DEVICES is set, only one GPU is visible in subprocess,
+                    # and it will be mapped to cuda:0 in that subprocess context
+                    effective_device = "cuda:0"
                 else:
                     subprocess_env["CUDA_VISIBLE_DEVICES"] = ""
                     self.logger.debug(f"[{identifier}] Using CPU (no GPU available)")
+                    effective_device = "cpu"
             else:
                 subprocess_env["CUDA_VISIBLE_DEVICES"] = ""
                 self.logger.debug(f"[{identifier}] Algorithm configured for CPU")
+                effective_device = "cpu"
 
             # When GPU allocation was used (including fallback to CPU), tell worker the effective device
+            # Note: effective_device is relative to the subprocess context (after CUDA_VISIBLE_DEVICES filtering)
             if allocated_device is not None:
                 with open(config_file, "r") as f:
                     config = json.load(f)
-                config.setdefault("optimization_config", {})["effective_algorithm_device"] = allocated_device
+                config.setdefault("optimization_config", {})["effective_algorithm_device"] = effective_device
                 with open(config_file, "w") as f:
                     json.dump(config, f, indent=2)
             

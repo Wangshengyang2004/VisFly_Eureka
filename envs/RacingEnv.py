@@ -31,44 +31,46 @@ class RacingEnv(DroneGymEnvsBase):
             latent_dim=None,
             tensor_output: bool = False,
     ):
-        random_kwargs = {
-            "state_generator":
-                {
-                    "class": "Union",
+        # Use config random_kwargs if provided, otherwise use default
+        if not random_kwargs:
+            random_kwargs = {
+                "state_generator":
+                    {
+                        "class": "Union",
 
-                    "kwargs": [
-                        {"randomizers_kwargs":
-                            [
-                                {
-                                    "class": "Uniform",
-                                    "kwargs":
-                                        {"position": {"mean": [2., 2., 1], "half": [.2, .2, 0.2]}},
+                        "kwargs": [
+                            {"randomizers_kwargs":
+                                [
+                                    {
+                                        "class": "Uniform",
+                                        "kwargs":
+                                            {"position": {"mean": [2., 2., 1], "half": [.2, .2, 0.2]}},
 
-                                },
-                                {
-                                    "class": "Uniform",
-                                    "kwargs":
-                                        {"position": {"mean": [6., 2., 1.5], "half": [.2, .2, 0.2]}},
+                                    },
+                                    {
+                                        "class": "Uniform",
+                                        "kwargs":
+                                            {"position": {"mean": [6., 2., 1.5], "half": [.2, .2, 0.2]}},
 
-                                },
-                                {
-                                    "class": "Uniform",
-                                    "kwargs":
-                                        {"position": {"mean": [6., -2., 1.5], "half": [.2, .2, 0.2]}},
+                                    },
+                                    {
+                                        "class": "Uniform",
+                                        "kwargs":
+                                            {"position": {"mean": [6., -2., 1.5], "half": [.2, .2, 0.2]}},
 
-                                },
-                                {
-                                    "class": "Uniform",
-                                    "kwargs":
-                                        {"position": {"mean": [2., 0., 1], "half": [.2, .2, 0.2]}},
+                                    },
+                                    {
+                                        "class": "Uniform",
+                                        "kwargs":
+                                            {"position": {"mean": [2., 0., 1], "half": [.2, .2, 0.2]}},
 
-                                },
-                            ]
-                        }
-                    ]
+                                    },
+                                ]
+                            }
+                        ]
 
-                }
-        }
+                    }
+            }
 
         super().__init__(
             num_agent_per_scene=num_agent_per_scene,
@@ -187,7 +189,7 @@ class RacingEnv(DroneGymEnvsBase):
                 else:
                     self._next_target_i[index] = 2
 
-    def get_reward(self) -> th.Tensor:
+    def get_reward(self, predicted_obs=None) -> th.Tensor:
         if not is_pos_reward:
             _next_target_i_clamp = self._next_target_i
             dis_vector = (self.targets[_next_target_i_clamp] - self.position)

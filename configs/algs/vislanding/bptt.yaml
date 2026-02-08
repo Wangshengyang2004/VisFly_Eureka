@@ -1,11 +1,19 @@
 algorithm:
   policy: SimplePolicy
   policy_kwargs:
-    features_extractor_class: StateExtractor
+    features_extractor_class: FlexibleExtractor
     features_extractor_kwargs:
       net_arch:
         state:
           layer: [512]
+        color:
+          kernel_size: [8, 4, 3]
+          channels: [32, 64, 64]
+          stride: [4, 2, 1]
+          padding: [0, 0, 0]
+          layer: [512]
+        target:
+          layer: [128, 64]
        
     critic:
       dist: mse
@@ -21,26 +29,26 @@ algorithm:
     optimizer_class: adam
     optimizer_kwargs:
       weight_decay: 0.00001
-    
+  
   learning_rate: 0.005
   horizon: 96
   tau: 0.005
   gamma: 0.99
-  batch_size: 256
+  batch_size: 25600
   train_freq: 96
   gradient_steps: 10
   actor_gradient_steps: 1
   device: cuda
 
-# Learning parameters  
+# Learning parameters
 learn:
-  total_timesteps: 50000
-  log_interval: 200
+  total_timesteps: 5000000
+  log_interval: 20
 
 # Test parameters
 test:
   is_fig: true
   is_fig_save: true
-  is_video: true
+  is_video: true 
   is_video_save: true
   render_kwargs: {}

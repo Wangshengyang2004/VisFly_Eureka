@@ -100,9 +100,61 @@ class IterationSummary:
 
 
 @dataclass
+class IterationMetadata:
+    """Metadata for a single optimization iteration (tracks success/failure)."""
+    iteration: int
+    succeeded: bool
+    generation_time: float
+    training_time: float
+    failure_reason: Optional[str] = None
+    sample_count: int = 0
+    successful_sample_count: int = 0
+
+
+@dataclass
+class ComponentIssue:
+    """Problematic reward component identified by agent voter."""
+    component: str  # Name of the component, e.g., "distance_penalty"
+    current_value: float  # Current coefficient/value
+    issue: str  # What problem this caused, e.g., "over-cautious behavior"
+    suggested_value: Optional[float] = None  # Suggested new value
+    suggested_action: Optional[str] = None  # Specific instruction like "reduce weight to -0.35"
+
+
+@dataclass
+class SuccessfulPattern:
+    """Successful reward pattern identified by agent voter."""
+    component: str  # Name of the component
+    value: float  # Coefficient/value
+    effect: str  # Why this works well
+
+
+@dataclass
+class AlternativeDirection:
+    """Alternative improvement direction for next iteration."""
+    type: str = field(default="alternative")  # Type marker for direction classification
+    direction_id: int = 0  # Unique identifier for the direction
+    focus: str = ""  # e.g., "aggressive_terminal_shaping"
+    description: str = ""  # What to try
+    rationale: str = ""  # Why this might work
+    suggested_changes: List[str] = field(default_factory=list)  # Specific changes to make
+
+
+@dataclass
+class CodeLevelFeedback:
+    """Code-level diagnostic feedback from agent voter."""
+    problematic_components: List[ComponentIssue]
+    missing_components: List[str]  # Component names that would improve performance
+    successful_patterns: List[SuccessfulPattern]
+    training_insights: List[str]  # Observations about training dynamics
+    convergence_issues: Optional[str] = None  # Description like "oscillating at target"
+    alternative_directions: List[AlternativeDirection] = field(default_factory=list)  # 2-3 different improvement directions
+
+
+@dataclass
 class OptimizationReport:
     """Final report from the optimization pipeline."""
-    
+
     total_samples: int
     successful_samples: int
     best_performance: Dict[str, float]
@@ -113,7 +165,7 @@ class OptimizationReport:
     best_reward_code: Optional[str] = None
     baseline_performance: Optional[Dict[str, float]] = None
     best_artifacts_dir: Optional[str] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert report to dictionary for serialization."""
         return {

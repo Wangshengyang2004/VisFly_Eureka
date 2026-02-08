@@ -25,8 +25,8 @@ optimization:
   gpu_memory_requirement_mb: 1024
   # History pruning: number of recent iterations to include in LLM context
   # -1 = keep all history (no pruning)
-  # 0 = Eureka-style: only keep current iteration (aggressive pruning)
-  # 1 = keep last iteration (similar to LaRes)
+  # 0 = only keep current iteration
+  # 1 = keep last iteration
   # 2+ = keep last N iterations (balanced approach, recommended: 2)
   history_window_size: 4
 
@@ -48,8 +48,8 @@ logging:
 
 # Prompt configuration for LLM
 prompt:
-  include_api_doc: true
   include_human_reward: true
+  num_alternative_directions: 3  # 0=off; 1,2,3,...=number of directions from Agent Voter
 
 # Hydra configuration
 hydra:

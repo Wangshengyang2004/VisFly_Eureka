@@ -24,19 +24,21 @@ class LandingEnv(DroneGymEnvsBase):
             sensor_kwargs: list = [],
             device: str = "cpu",
             target: Optional[th.Tensor] = None,
+            landing_target: Optional[th.Tensor] = None,
             max_episode_steps: int = 128,
-            is_eval: bool = False,
             tensor_output: bool = False,
     ):
-        random_kwargs = {
-            "state_generator":
-                {
-                    "class": "Uniform",
-                    "kwargs": [
-                        {"position": {"mean": [2., 0., 2.5], "half": [1.0, 1.0, 1.0]}},
-                    ]
-                }
-        }
+        # Use config random_kwargs if provided, otherwise use default
+        if not random_kwargs:
+            random_kwargs = {
+                "state_generator":
+                    {
+                        "class": "Uniform",
+                        "kwargs": [
+                            {"position": {"mean": [2., 0., 2.5], "half": [1.0, 1.0, 1.0]}},
+                        ]
+                    }
+            }
 
         super().__init__(
             num_agent_per_scene=num_agent_per_scene,
@@ -53,9 +55,10 @@ class LandingEnv(DroneGymEnvsBase):
             tensor_output=tensor_output,
         )
 
-        self.target = th.ones((self.num_envs, 1)) @ th.as_tensor([2., 0., 2.5] if target is None else target).reshape(1, -1)
-        if is_eval:
-            self.target = th.as_tensor([[2., 1., 2.5],[2., 0., 2.5],[2., -1., 2.5]])
+        # Use landing_target if provided (eval config), otherwise target, otherwise default
+        target_pos = landing_target if landing_target is not None else (target if target is not None else [2., 0., 0.2])
+        self.target = th.ones((self.num_envs, 1), device=self.device) @ th.as_tensor(target_pos, device=self.device, dtype=th.float32).reshape(1, -1)
+        
         self.observation_space = spaces.Dict({
             "state": spaces.Box(low=-np.inf, high=np.inf, shape=(13,), dtype=np.float32),
         })
@@ -90,7 +93,7 @@ class LandingEnv(DroneGymEnvsBase):
         # ((self.position[:, :2] < self.target[:2] + landing_half).all(dim=1) & (self.position[:, :2] > self.target[:2] - landing_half).all(dim=1))
 
 
-    def get_reward(self) -> th.Tensor:
+    def get_reward(self, predicted_obs=None) -> th.Tensor:
         eta = th.as_tensor(1.2)
         v_l = 1 * (self.position[:, 2] - 0).clip(min=0.05, max=1).clone().detach()
         r_p = -0.1

@@ -11,18 +11,30 @@ from typing import Dict, Any, Optional
 _logger = logging.getLogger(__name__)
 
 
-def create_system_prompt() -> str:
+def create_system_prompt(algorithm: str = "bptt") -> str:
     """Create system prompt for LLM reward function generation."""
+    dense_reward_note = ""
+    if algorithm.lower() in ("bptt", "shac"):
+        dense_reward_note = (
+            "Reward shape (BPTT/SHAC): Use dense, continuous rewards every step. "
+            "Avoid sparse rewards in any form "
+            "gradient-based methods need step-wise differentiable signal.\n\n"
+        )
     return (
         "You are a reward engineer creating reinforcement-learning reward functions. "
         "Write a complete `def get_reward(self, predicted_obs=None) -> torch.Tensor` implementation that helps the policy master "
-        "each VisFly task. Follow the API reference for return shape, available attributes, and gradient/safety rules.\n\n"
-        "Guidance:\n"
+        "each VisFly task. You MUST strictly follow ALL rules in the API reference, especially gradient safety patterns like `(tensor - 0)` for dynamics-related tensors.\n\n"
+        + dense_reward_note
+        + "Guidance:\n"
         "- Scale rewards to reasonable values for stable training.\n\n"
+        "CRITICAL CONSTRAINTS (violations cause training failures):\n"
+        "1. NEVER use self.is_collision, self.success, self.failure in reward computation - these break gradient flow.\n"
+        "2. ALWAYS use (tensor - 0) pattern for velocity/acceleration tensors to preserve gradients.\n\n"
         "Pitfalls to avoid:\n"
         "- Do not call Torch APIs with invalid signatures (e.g., `torch.min(tensor, dim=int)`).\n"
         "- Do not instantiate tensors inside `torch.where` (use scalar literals).\n"
         "- Do not mix `_step_count` scalars directly with tensors without broadcasting helpers.\n"
+        "- Only call .clamp(), .clamp_min(), .clamp_max() on torch tensors; Python floats have no .clamp attribute. Keep intermediate values as tensors (do not use .item() before clamping).\n"
         "- Do not rely on TorchScript; focus on readable, differentiable PyTorch.\n\n"
         "Deliver confident, well-structured code with minimal comments. Avoid redundant comments that simply restate the code."
     )
@@ -176,15 +188,30 @@ def create_user_prompt(
         prompt_parts.append("```python")
         prompt_parts.append(elite_reward_code.strip())
         prompt_parts.append("```")
-        prompt_parts.append("You can use this as a reference, but try to improve upon it based on the feedback below.")
 
-    if feedback:
-        prompt_parts.append("\nFeedback from previous attempts (address every point):")
+        if feedback:
+            prompt_parts.append("\n## Required Modifications (from analysis):")
+            prompt_parts.append(feedback.strip())
+            prompt_parts.append("\n**IMPORTANT**: You MUST apply the specific fixes listed above.")
+            prompt_parts.append(
+                "Use the reference as inspiration, but feel free to explore different structures."
+            )
+        else:
+            prompt_parts.append("\nImprove this function based on general reward design principles.")
+
+    elif feedback:
+        prompt_parts.append(
+            "\n## Required Modifications to the previous elite reward function (your last response):"
+        )
         prompt_parts.append(feedback.strip())
+        prompt_parts.append("\n**IMPORTANT**: You MUST apply the specific fixes listed above.")
+        prompt_parts.append(
+            "Use the previous elite as baseline, but feel free to explore different structures."
+        )
 
     prompt_parts.append(
         "\nReturn only the complete `def get_reward(self, predicted_obs=None) -> torch.Tensor` implementation. "
-        "You may return a torch.Tensor directly, or optionally return a dict with a 'reward' key (and optionally other keys for decomposed components). "
+        "The function MUST return a 1-D torch.Tensor of shape (num_agent,). Do NOT return a dict. "
         "Keep the code concise with minimal comments."
     )
 

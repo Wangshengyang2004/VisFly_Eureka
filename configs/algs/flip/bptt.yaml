@@ -28,8 +28,8 @@ algorithm:
   learning_rate:
     class: cosine
     kwargs:
-      initial: 0.0002
-      final: 0.00005
+      initial: 0.0001
+      final: 0.0001
       period: 0.1
   horizon: 96
   tau: 0.005
@@ -42,8 +42,8 @@ algorithm:
 
 # Learning/training parameters
 learn:
-  total_timesteps: 20000000
-  log_interval: 20
+  total_timesteps: 50000000
+  log_interval: 100
 
 # Test parameters (for evaluation mode)
 test:

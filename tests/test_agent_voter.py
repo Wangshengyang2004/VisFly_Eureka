@@ -161,7 +161,7 @@ Perform a deep analysis for this task. Explore {train_dir} and analyze each samp
 - tensorboard/ logs (training curves) — parse and use these for convergence and reward-curve comparison; include in your analysis.
 
 Write your final decision to {result_file} as JSON:
-{{"selected_index": <int>, "selected_identifier": "<sampleN>", "reasoning": "<why>", "confidence": <0-1>, "analysis_summary": "<overview>"}}"""
+{{"selected_index": <int>, "selected_identifier": "<sampleN>", "reasoning": "<why>", "analysis_summary": "<overview>"}}"""
 
     options = ClaudeAgentOptions(
         model=model,
@@ -327,7 +327,6 @@ def main():
                 "selected_index": vote_result.selected_index,
                 "selected_identifier": vote_result.selected_identifier,
                 "reasoning": vote_result.reasoning,
-                "confidence": vote_result.confidence,
                 "analysis_summary": vote_result.analysis_summary,
             }
         else:

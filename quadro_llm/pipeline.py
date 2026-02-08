@@ -17,6 +17,7 @@ from .core.models import (
     IterationSummary,
     OptimizationReport,
     RewardFunctionResult,
+    IterationMetadata,
 )
 
 
@@ -141,46 +142,81 @@ class EurekaPipeline:
             }
             best_code = best.reward_code
 
-        # Create iteration history from eureka optimization history
+        # Get iteration metadata for tracking all attempts (including failures)
+        iteration_metadata = getattr(self.eureka, 'iteration_metadata', {})
+
+        # Build a mapping from iteration number (0-based) to optimization_history index
+        # optimization_history only contains successful iterations, in order
+        # We need to map each metadata iteration to its corresponding results
+        iter_to_optim_history = {}
+        for optim_idx, iter_results in enumerate(self.eureka.optimization_history):
+            # Find which iteration this corresponds to by matching metadata
+            # The iteration number for optim_idx entry is the (optim_idx)th successful iteration
+            # We need to find which metadata entry this is
+            for iter_num, metadata in iteration_metadata.items():
+                if metadata.succeeded and len([x for x in iteration_metadata.values() if x.succeeded and x.iteration < iter_num]) == optim_idx:
+                    iter_to_optim_history[iter_num] = iter_results
+                    break
+
+        # Create iteration history from metadata (includes both successful and failed)
         iteration_history = []
-        for iteration_index, iter_results in enumerate(
-            self.eureka.optimization_history, start=1
-        ):
-            if not iter_results:
-                continue
 
-            reward_results = [
-                RewardFunctionResult(
-                    reward_code=result.reward_code,
-                    identifier=result.identifier,
-                    training_successful=True,
-                    success_rate=result.success_rate,
-                    episode_length=result.episode_length,
-                    training_time=result.training_time,
-                    final_reward=result.final_reward,
-                    convergence_step=result.convergence_step,
-                    error_message="",
-                    log_dir=getattr(result, "log_dir", None),
+        for iter_num in sorted(iteration_metadata.keys()):
+            metadata = iteration_metadata[iter_num]
+
+            if metadata.succeeded and iter_num in iter_to_optim_history:
+                # Successful iteration - get results from optimization_history
+                iter_results = iter_to_optim_history[iter_num]
+
+                reward_results = [
+                    RewardFunctionResult(
+                        reward_code=result.reward_code,
+                        identifier=result.identifier,
+                        training_successful=True,
+                        success_rate=result.success_rate,
+                        episode_length=result.episode_length,
+                        training_time=result.training_time,
+                        final_reward=result.final_reward,
+                        convergence_step=result.convergence_step,
+                        error_message="",
+                        log_dir=getattr(result, "log_dir", None),
+                    )
+                    for result in iter_results
+                ]
+
+                if reward_results:
+                    best_idx, best_result = max(
+                        enumerate(reward_results), key=lambda item: item[1].success_rate
+                    )
+                else:
+                    best_idx, best_result = -1, None
+
+                iteration_history.append(
+                    IterationSummary(
+                        iteration=iter_num + 1,  # 1-based for report
+                        samples=reward_results,
+                        best_sample_idx=best_idx,
+                        best_success_rate=best_result.success_rate if best_result else 0.0,
+                        best_correlation=0.0,
+                        execution_rate=1.0 if metadata.succeeded else 0.0,
+                        generation_time=metadata.generation_time,
+                        total_training_time=sum(r.training_time for r in iter_results),
+                    )
                 )
-                for result in iter_results
-            ]
-
-            best_idx, best_result = max(
-                enumerate(reward_results), key=lambda item: item[1].success_rate
-            )
-
-            iteration_history.append(
-                IterationSummary(
-                    iteration=iteration_index,
-                    samples=reward_results,
-                    best_sample_idx=best_idx,
-                    best_success_rate=best_result.success_rate,
-                    best_correlation=0.0,
-                    execution_rate=1.0,
-                    generation_time=0.0,
-                    total_training_time=sum(r.training_time for r in iter_results),
+            else:
+                # Failed iteration - no training results
+                iteration_history.append(
+                    IterationSummary(
+                        iteration=iter_num + 1,  # 1-based for report
+                        samples=[],
+                        best_sample_idx=-1,
+                        best_success_rate=0.0,
+                        best_correlation=0.0,
+                        execution_rate=0.0,  # Failed iteration
+                        generation_time=metadata.generation_time,
+                        total_training_time=0.0,
+                    )
                 )
-            )
 
         return OptimizationReport(
             total_samples=total_samples,
@@ -224,27 +260,58 @@ class EurekaPipeline:
     def _select_best_reward_result(
         self, results: List[RewardFunctionResult]
     ) -> Optional[RewardFunctionResult]:
-        """Return the highest-scoring reward function result from the provided list."""
-
-        best_result: Optional[RewardFunctionResult] = None
-
-        for result in results:
-            if best_result is None:
-                best_result = result
-                continue
-
-            if result.success_rate > best_result.success_rate:
-                best_result = result
-                continue
-
-            if (
-                result.success_rate == best_result.success_rate
-                and result.episode_length > best_result.episode_length
-            ):
-                best_result = result
-
+        """Select best result using Agent Voter's choices across all iterations."""
+        
+        if not results:
+            return None
+        
+        # Use agent voter's selections - find the best across all iterations
+        elite_vote_results = getattr(self.eureka, 'elite_vote_results', {})
+        complete_iteration_results = getattr(self.eureka, 'complete_iteration_results', [])
+        
+        if not elite_vote_results:
+            # No agent voter results - this is an error
+            self.logger.error("No agent voter results available - agent voter should always run")
+            raise RuntimeError("No agent voter results available. Agent voter is required for selection.")
+        
+        # Collect all agent-selected samples with their vote info
+        agent_selections = []
+        for iteration, vote_result in elite_vote_results.items():
+            # Find the corresponding result
+            if iteration < len(complete_iteration_results):
+                iter_results = complete_iteration_results[iteration]
+                selected = next(
+                    (r for r in iter_results if r.identifier == vote_result.selected_identifier),
+                    None
+                )
+                if selected and selected.training_successful:
+                    agent_selections.append((selected, vote_result, iteration))
+        
+        if not agent_selections:
+            self.logger.error("No valid agent selections found in elite_vote_results")
+            raise RuntimeError("No valid agent selections found. Check agent voter output.")
+        
+        # Select best from agent selections using multi-criteria:
+        # 1. success_rate (higher is better)
+        # 2. episode_length (shorter is better, negate for max)
+        # 3. final_reward (higher is better)
+        def rank_agent_selection(item):
+            result, vote_result, iteration = item
+            return (
+                result.success_rate,
+                -result.episode_length,  # Shorter episode is better
+                result.final_reward,
+            )
+        
+        best_item = max(agent_selections, key=rank_agent_selection)
+        best_result = best_item[0]
+        best_vote = best_item[1]
+        best_iteration = best_item[2]
+        self.logger.info(
+            f"Selected global best from agent voter: iter{best_iteration}/{best_result.identifier} "
+            f"(success_rate={best_result.success_rate:.3f}, episode_length={best_result.episode_length:.1f})"
+        )
         return best_result
-
 
     def _ensure_best_alias(self, target_path: Path) -> Path:
         """Expose a stable best_sample directory pointing to target_path."""

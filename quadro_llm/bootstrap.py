@@ -56,9 +56,9 @@ def load_environment_class(env_name: str):
         "flip": ("envs.FlipEnv", "FlipEnv"),
         "hover": ("envs.HoverEnv", "HoverEnv"),  # Use envs/ not VisFly/envs/ (VisFly version has get_success always returning False)
         "navigation": ("envs.NavigationEnv", "NavigationEnv"),  # Use envs/ not VisFly/envs/
-        "landing": ("envs.VisLanding", "VisLandingEnv"),
-        "vis_landing": ("envs.VisLanding", "VisLandingEnv"),
-        "racing": ("VisFly.envs.RacingEnv", "RacingEnv"),
+        "landing": ("envs.LandingEnv", "LandingEnv"),  # State-based landing
+        "vis_landing": ("envs.VisLanding", "VisLandingEnv"),  # Visual landing with camera
+        "racing": ("envs.RacingEnv", "RacingEnv"),  # Use local version
         "tracking": ("VisFly.envs.ObjectTrackingEnv", "ObjectTrackingEnv"),
     }
 
@@ -224,16 +224,16 @@ def load_llm_config(cfg: DictConfig, opt_config: OptimizationConfig = None) -> d
     # Load prompt config from main config (moved from individual LLM configs)
     if "prompt" in cfg:
         prompt_cfg = OmegaConf.to_container(cfg.prompt, resolve=True)
-        # These fields are defined in configs/config.yaml and should be present
-        llm_config["include_api_doc"] = bool(prompt_cfg["include_api_doc"])
+        # include_api_doc is always enabled (hardcoded)
+        llm_config["include_api_doc"] = True
         llm_config["include_human_reward"] = bool(prompt_cfg["include_human_reward"])
-        # api_doc_path is optional and may not be in config
-        api_doc_path = prompt_cfg.get("api_doc_path")
-        if api_doc_path:
+        # api_doc_path is optional
+        if "api_doc_path" in prompt_cfg:
+            llm_config["api_doc_path"] = prompt_cfg["api_doc_path"]
             llm_config["api_doc_path"] = api_doc_path
 
     # Add history_window_size from optimization config
-    if opt_config is not None and hasattr(opt_config, "history_window_size"):
+    if opt_config is not None:
         llm_config["history_window_size"] = opt_config.history_window_size
 
     return llm_config
@@ -308,8 +308,13 @@ def create_eureka_controller(cfg: DictConfig, logger: logging.Logger) -> EurekaV
     # Check if coefficient tuning mode is enabled
     use_coefficient_tuning = bool(getattr(cfg.optimization, "use_coefficient_tuning", False))
     
-    # Get agent config for autonomous voter
+    # Get agent config for autonomous voter; prompt config for num_alternative_directions
     agent_config = getattr(cfg, "agent", None)
+    prompt_config = getattr(cfg, "prompt", None)
+    pipeline_seed = OmegaConf.select(cfg, "pipeline.seed")
+    if pipeline_seed is None:
+        pipeline_seed = 42
+    pipeline_seed = int(pipeline_seed)
 
     return EurekaVisFly(
         env_class=env_class,
@@ -321,6 +326,8 @@ def create_eureka_controller(cfg: DictConfig, logger: logging.Logger) -> EurekaV
         max_workers=max_workers,
         eval_env_config=eval_env_config,
         agent_config=agent_config,
+        prompt_config=prompt_config,
+        seed=pipeline_seed,
         use_coefficient_tuning=use_coefficient_tuning,
     )
 

@@ -21,9 +21,7 @@ from pathlib import Path
 
 from .llm.llm_engine import LLMEngine
 from .llm.prompts import create_user_prompt, extract_env_code_without_reward
-from .core.models import TrainingResult
-from .core.models import OptimizationConfig
-from .core.model_evaluation import extract_environment_context_minimal
+from .core.models import TrainingResult, OptimizationConfig, IterationMetadata
 from .core.subprocess_evaluator import SubprocessRewardEvaluator
 from .core.agent_voter import AgentVoter, AgentVoterResult
 from .utils.tensorboard_utils import (
@@ -54,6 +52,8 @@ class EurekaVisFly:
         max_workers: int,
         eval_env_config: Dict[str, Any],
         agent_config: DictConfig = None,
+        prompt_config: DictConfig = None,
+        seed: int = 42,
         use_coefficient_tuning: bool = False,
     ):
         """
@@ -87,7 +87,9 @@ class EurekaVisFly:
         
         # Initialize agent voter for autonomous selection
         self.agent_config = agent_config
-        self.agent_voter = AgentVoter(agent_config) if agent_config else None
+        self.prompt_config = prompt_config
+        self.seed = seed
+        self.agent_voter = AgentVoter(agent_config, prompt_config) if agent_config else None
 
         # Track optimization history
         self.optimization_history: List[List[TrainingResult]] = []
@@ -99,9 +101,12 @@ class EurekaVisFly:
         # Track elite voter results for feedback generation
         # Use dict indexed by iteration to handle gaps when iterations fail
         self.elite_vote_results: Dict[int, Any] = {}  # {iteration: AgentVoterResult}
-        
+
         # Coefficient tuning mode flag
         self.use_coefficient_tuning = use_coefficient_tuning
+
+        # Track metadata for ALL attempted iterations (including failures)
+        self.iteration_metadata: Dict[int, IterationMetadata] = {}
 
     def create_environment(self, requires_grad: bool = False) -> Any:
         """Create a VisFly environment instance with specified configuration."""
@@ -110,6 +115,10 @@ class EurekaVisFly:
         env_kwargs.update({"requires_grad": requires_grad})
         # Don't override device - let environment use its configured device
         return self.env_class(**env_kwargs)
+
+    def _prompt_context_info(self) -> dict:
+        """Build minimal context dict for LLM prompts (algorithm only)."""
+        return {"algorithm": self.config.algorithm}
 
     def optimize_rewards(self) -> List[TrainingResult]:
         """
@@ -127,6 +136,8 @@ class EurekaVisFly:
 
         for iteration in range(iterations):
             self.logger.info(f"Iteration {iteration + 1}")
+            generation_start = time.perf_counter()
+            self.llm.start_iteration(iteration)
 
             try:
                 # Generate reward function candidates
@@ -160,6 +171,14 @@ class EurekaVisFly:
                 if not reward_functions:
                     self.logger.warning(
                         f"No valid reward functions generated in iteration {iteration + 1}"
+                    )
+                    # Record failed iteration metadata
+                    self.iteration_metadata[iteration] = IterationMetadata(
+                        iteration=iteration,
+                        succeeded=False,
+                        generation_time=time.perf_counter() - generation_start,
+                        training_time=0.0,
+                        failure_reason="No valid reward functions generated",
                     )
                     continue
 
@@ -247,7 +266,10 @@ class EurekaVisFly:
                     output_dir = Path(HydraConfig.get().runtime.output_dir) if HydraConfig and HydraConfig.initialized() else Path(".")
                     train_dir = output_dir / "train" / f"iter{iteration}"
                     
-                    vote_result = self.agent_voter.vote(train_dir, output_dir, iteration, self.task_description)
+                    vote_result = self.agent_voter.vote(
+                        train_dir, output_dir, iteration, self.task_description,
+                        history_window=self.config.history_window_size,
+                    )
                     
                     # Find best_result by identifier
                     best_result = next(
@@ -257,22 +279,17 @@ class EurekaVisFly:
                     self.best_reward_functions.append(best_result.reward_code)
                     self.elite_vote_results[iteration] = vote_result
                     
-                    self.logger.info(f"Agent voter selected: {best_result.identifier} (success_rate={best_result.success_rate:.3f}, confidence={vote_result.confidence:.2f})")
+                    self.logger.info(f"Agent voter selected: {best_result.identifier} (success_rate={best_result.success_rate:.3f})")
                     self.logger.debug(f"Voter reasoning: {vote_result.reasoning[:200]}...")
                     
-                    # Update conversation history with elite reward function only
-                    # Reconstruct the user prompt that was used for this iteration
-                    # Note: For history, we include static info only if it's the first iteration
-                    # (subsequent iterations already have it in history)
-                    # IMPORTANT: Use the feedback generated at the START of this iteration,
-                    # not regenerated here, because self.optimization_history already contains
-                    # current iteration results which would cause wrong data to be retrieved
-                    context_info = extract_environment_context_minimal(self.env_class)
+                    # Update conversation history with elite reward function
+                    # The elite code is stored as the assistant response, so the
+                    # user prompt only needs feedback (no elite_reward_code to avoid
+                    # duplicating what the assistant message already contains).
+                    context_info = self._prompt_context_info()
                     prev_feedback = feedback if iteration > 0 else ""
-                    prev_elite_code = self.best_reward_functions[-2] if len(self.best_reward_functions) >= 2 else None
 
                     env_code = extract_env_code_without_reward(self.env_class)
-                    # Only include static info for first iteration (iteration 0)
                     include_static_info = iteration == 0
                     user_prompt = create_user_prompt(
                         task_description=self.task_description,
@@ -280,25 +297,45 @@ class EurekaVisFly:
                         feedback=prev_feedback,
                         env_code=env_code,
                         api_doc=self.llm.api_doc_content if self.llm.api_doc_content else None,
-                        human_reward_code=None,  # Not needed for history update
-                        elite_reward_code=prev_elite_code,
+                        human_reward_code=None,
+                        elite_reward_code=None,
                         include_static_info=include_static_info,
                     )
                     
                     # Update history with elite reward function (only elite, not first candidate)
                     self.llm._update_conversation_history(best_result.reward_code, user_prompt)
+
+                    # Record successful iteration metadata
+                    generation_time = time.perf_counter() - generation_start
+                    successful_samples = sum(1 for r in iteration_results if r.training_successful)
+                    self.iteration_metadata[iteration] = IterationMetadata(
+                        iteration=iteration,
+                        succeeded=True,
+                        generation_time=generation_time,
+                        training_time=sum(r.training_time for r in iteration_results),
+                        sample_count=len(iteration_results),
+                        successful_sample_count=successful_samples,
+                    )
                 else:
                     self.logger.warning(f"All samples failed in iteration {iteration + 1}. Regenerating...")
+                    # Record failed iteration metadata (no agent voter or all samples failed)
+                    self.iteration_metadata[iteration] = IterationMetadata(
+                        iteration=iteration,
+                        succeeded=False,
+                        generation_time=time.perf_counter() - generation_start,
+                        training_time=0.0,
+                        failure_reason="No agent voter or all samples failed",
+                    )
                     # Regenerate with simpler feedback when all fail
                     simple_feedback = "All previous attempts failed due to coding errors. Generate simpler, more robust reward functions with basic components only. Use simple torch operations and avoid complex logic."
                     retry_functions = self.generate_reward_candidates(
                         samples=samples, iteration=iteration, feedback=simple_feedback
                     )
                     self.logger.info(f"Regenerated {len(retry_functions)} simpler reward functions")
-                    
+
                     # Save regenerated functions with retry suffix
                     self._save_reward_functions(retry_functions, iteration, suffix="_retry")
-                    
+
                     # Re-evaluate the regenerated functions (simplified retry logic)
                     self.logger.info("Evaluating regenerated functions...")
                     # Skip retry evaluation for now to avoid infinite loops
@@ -316,7 +353,16 @@ class EurekaVisFly:
                         f"or using a model with larger context window."
                     )
                     raise  # Fail fast - this is a configuration error
-                
+
+                # Record failed iteration metadata
+                self.iteration_metadata[iteration] = IterationMetadata(
+                    iteration=iteration,
+                    succeeded=False,
+                    generation_time=time.perf_counter() - generation_start,
+                    training_time=0.0,
+                    failure_reason=str(e),
+                )
+
                 # Other errors: log and continue (recoverable)
                 self.logger.error(f"Error in iteration {iteration + 1}: {e}")
                 continue
@@ -343,14 +389,14 @@ class EurekaVisFly:
             # Coefficient tuning mode: LLM only outputs coefficients
             if feedback is None:
                 feedback = self.get_iteration_feedback(iteration)
-            
+
             # Get current best coefficients for reference
             current_coefficients = None
             if iteration > 0 and self.optimization_history:
                 # Extract coefficients from best result if available
                 # For now, we'll just pass None and let LLM generate fresh
                 pass
-            
+
             reward_functions = self.llm.generate_coefficients(
                 task_description=self.task_description,
                 feedback=feedback,
@@ -359,8 +405,7 @@ class EurekaVisFly:
             )
         else:
             # Standard Eureka mode: LLM generates full reward function
-            # Build context-aware prompt without creating environment (avoids blocking)
-            context_info = extract_environment_context_minimal(self.env_class)
+            context_info = self._prompt_context_info()
             if feedback is None:
                 feedback = self.get_iteration_feedback(iteration)
 
@@ -368,7 +413,19 @@ class EurekaVisFly:
             elite_reward_code = None
             if iteration > 0 and self.best_reward_functions:
                 elite_reward_code = self.best_reward_functions[-1]
-            
+
+            # Get alternative_directions from previous iteration's vote result
+            alternative_directions = None
+            prev_iteration = iteration - 1
+            if prev_iteration >= 0 and prev_iteration in self.elite_vote_results:
+                vote_result = self.elite_vote_results[prev_iteration]
+                if vote_result and vote_result.code_level_feedback:
+                    alternative_directions = vote_result.code_level_feedback.alternative_directions
+                    if alternative_directions:
+                        self.logger.info(
+                            f"Using {len(alternative_directions)} alternative directions from Agent Voter"
+                        )
+
             # Generate reward functions
             # Note: We don't update conversation history here - it will be updated
             # after elite voter selection with only the elite reward function
@@ -379,13 +436,93 @@ class EurekaVisFly:
                 samples=samples,
                 env_class=self.env_class,
                 previous_elite_reward=elite_reward_code,
+                alternative_directions=alternative_directions,
+                seed=self.seed,
             )
+
+            # Detect and regenerate duplicates
+            reward_functions = self._regenerate_duplicates(reward_functions, iteration)
 
         return reward_functions
 
     def get_iteration_feedback(self, iteration: int) -> str:
         """Generate feedback string based on previous iteration results."""
         return self._generate_feedback(iteration)
+
+    def _calculate_similarity(self, code1: str, code2: str) -> float:
+        """Calculate line-level Jaccard similarity between two reward functions."""
+        def extract_body(code: str) -> set:
+            lines = code.split('\n')
+            body_lines = []
+            found_def = False
+            for line in lines:
+                if found_def:
+                    body_lines.append(line.strip())
+                elif line.strip().startswith('def get_reward'):
+                    found_def = True
+                    body_lines.append(line.strip())
+            return {l for l in body_lines if l and not l.startswith('#')}
+
+        set1 = extract_body(code1)
+        set2 = extract_body(code2)
+
+        if not set1 or not set2:
+            return 0.0
+
+        intersection = len(set1 & set2)
+        union = len(set1 | set2)
+        return intersection / union if union > 0 else 0.0
+
+    def _regenerate_duplicates(
+        self,
+        reward_functions: List[str],
+        iteration: int,
+        similarity_threshold: float = 0.90
+    ) -> List[str]:
+        """Detect and regenerate duplicate reward functions."""
+        n = len(reward_functions)
+        is_duplicate = [False] * n
+
+        # Collect all similarity pairs for diagnostic logging
+        similarity_pairs = []
+
+        # Detect duplicates
+        for i in range(n):
+            for j in range(i + 1, n):
+                sim = self._calculate_similarity(reward_functions[i], reward_functions[j])
+                similarity_pairs.append((i, j, sim))
+                if sim >= similarity_threshold:
+                    is_duplicate[j] = True
+                    self.logger.warning(
+                        f"Duplicate detected: sample{j} vs sample{i} (sim={sim:.2f})"
+                    )
+
+        # Log similarity matrix for diversity diagnostics
+        high_similarity_pairs = [(i, j, f"{sim:.2f}") for i, j, sim in similarity_pairs if sim > 0.5]
+        if high_similarity_pairs:
+            self.logger.info(f"Similarity matrix (>0.5): {high_similarity_pairs}")
+        else:
+            self.logger.info("All samples have low similarity (<0.5) - good diversity")
+
+        # Regenerate duplicates without elite reward to force innovation
+        result = reward_functions.copy()
+        for i, is_dup in enumerate(is_duplicate):
+            if is_dup:
+                self.logger.info(f"Regenerating sample{i}...")
+                context_info = self._prompt_context_info()
+                retry = self.llm.generate_reward_functions(
+                    task_description=self.task_description,
+                    context_info=context_info,
+                    feedback="Generate a significantly different implementation.",
+                    samples=1,
+                    env_class=self.env_class,
+                    previous_elite_reward=None,  # No elite to force innovation
+                )
+
+                if retry:
+                    result[i] = retry[0]
+
+        return result
 
     def _generate_feedback(self, iteration: int, all_iteration_results=None) -> str:
         """
@@ -490,19 +627,24 @@ class EurekaVisFly:
                 ]
         
         if last_results is None or len(last_results) == 0:
-            # Generate more informative fallback feedback instead of default
+            # Use agent voter's analysis as feedback instead of failing
+            prev_iteration = iteration - 1
+            if prev_iteration in self.elite_vote_results:
+                vote_result = self.elite_vote_results[prev_iteration]
+                self.logger.info(
+                    f"Iteration {iteration}: No training results, using agent voter analysis from iter{prev_iteration}"
+                )
+                return (
+                    f"Previous iteration analysis from agent:\n"
+                    f"{vote_result.reasoning}\n\n"
+                    f"Summary: {vote_result.analysis_summary}"
+                )
+            
+            # No agent result either - this is a real failure
             self.logger.error(
-                f"Iteration {iteration}: Failed to retrieve any training results for feedback generation. "
-                f"optimization_history: {len(self.optimization_history) if self.optimization_history else 0} entries, "
-                f"complete_iteration_results: {len(self.complete_iteration_results) if self.complete_iteration_results else 0} entries. "
-                "This should not happen in normal operation."
+                f"Iteration {iteration}: No training results or agent analysis available."
             )
-            # Return informative feedback instead of default
-            return (
-                f"Previous iteration (iteration {iteration-1}) had no successful training results available for feedback. "
-                "This may indicate training failures or data structure issues. "
-                "Try generating simpler reward functions with basic components only."
-            )
+            return "Previous iteration had no successful results. Generate simpler reward functions."
 
         # Get complete results (successful + failed) from last iteration for detailed feedback
         # If we haven't set complete_last_results yet, try to get it now
@@ -520,15 +662,23 @@ class EurekaVisFly:
                 )
 
         if not last_results or len(last_results) == 0:
+            # Use agent voter's analysis as feedback
+            prev_iteration = iteration - 1
+            if prev_iteration in self.elite_vote_results:
+                vote_result = self.elite_vote_results[prev_iteration]
+                self.logger.info(
+                    f"Iteration {iteration}: Empty last_results, using agent voter analysis"
+                )
+                return (
+                    f"Previous iteration analysis from agent:\n"
+                    f"{vote_result.reasoning}\n\n"
+                    f"Summary: {vote_result.analysis_summary}"
+                )
+            
             self.logger.warning(
-                f"Iteration {iteration}: No training results available for feedback. "
-                f"last_results is empty or None."
+                f"Iteration {iteration}: No training results or agent analysis available."
             )
-            return (
-                f"Previous iteration (iteration {iteration-1}) had no successful training results. "
-                "All samples may have failed during training. "
-                "Try generating simpler reward functions with basic components only, avoiding complex logic."
-            )
+            return "Previous iteration had no successful results. Generate simpler reward functions."
 
         # Get elite voter result if available
         # For iteration N, we need the vote_result from iteration N-1
@@ -539,7 +689,7 @@ class EurekaVisFly:
             vote_result = self.elite_vote_results[prev_iteration]
             self.logger.debug(
                 f"Iteration {iteration}: Retrieved vote_result from iteration {prev_iteration}, "
-                f"selected_index={vote_result.selected_index}, confidence={vote_result.confidence:.2f}"
+                f"selected_index={vote_result.selected_index}"
             )
         elif prev_iteration >= 0:
             # Try to find the most recent available vote result
@@ -609,7 +759,7 @@ class EurekaVisFly:
                     )
                     self.logger.info(
                         f"Using elite voter selection: {best_result.identifier} "
-                        f"(success_rate={best_result.success_rate:.3f}, confidence={vote_result.confidence:.2f})"
+                        f"(success_rate={best_result.success_rate:.3f})"
                     )
                 else:
                     # Log detailed information for debugging
@@ -653,7 +803,69 @@ class EurekaVisFly:
                     failed_samples.append(i)
         
         feedback_parts = []
-        
+
+        # NEW: Use code_level_feedback from previous iteration if available
+        if vote_result and vote_result.code_level_feedback:
+            clf = vote_result.code_level_feedback
+
+            feedback_parts.append("## Code-Level Analysis from Previous Iteration")
+
+            # Problematic components
+            if clf.problematic_components:
+                feedback_parts.append("\n### Problematic Components to Fix:")
+                for comp in clf.problematic_components:
+                    if comp.suggested_value is not None:
+                        feedback_parts.append(
+                            f"- {comp.component} (current={comp.current_value}): "
+                            f"{comp.issue} → Suggested: {comp.suggested_value}"
+                        )
+                    elif comp.suggested_action:
+                        feedback_parts.append(
+                            f"- {comp.component} (current={comp.current_value}): "
+                            f"{comp.issue} → {comp.suggested_action}"
+                        )
+                    else:
+                        feedback_parts.append(
+                            f"- {comp.component} (current={comp.current_value}): {comp.issue}"
+                        )
+
+            # Missing components
+            if clf.missing_components:
+                feedback_parts.append("\n### Missing Components to Add:")
+                for comp in clf.missing_components:
+                    feedback_parts.append(f"- Add: {comp}")
+
+            # Successful patterns (keep these)
+            if clf.successful_patterns:
+                feedback_parts.append("\n### Successful Patterns to Keep:")
+                for pattern in clf.successful_patterns:
+                    feedback_parts.append(
+                        f"- {pattern.component}={pattern.value}: {pattern.effect}"
+                    )
+
+            # Training insights
+            if clf.training_insights:
+                feedback_parts.append("\n### Training Insights:")
+                for insight in clf.training_insights:
+                    feedback_parts.append(f"- {insight}")
+
+            # Convergence issues
+            if clf.convergence_issues:
+                feedback_parts.append(f"\n### Convergence Issue: {clf.convergence_issues}")
+
+            # Diversity note: encourage exploration around suggested fixes
+            feedback_parts.append("\n### Implementation Diversity:")
+            feedback_parts.append("While applying the above fixes, explore different implementation strategies:")
+            feedback_parts.append("- Vary coefficient values around the suggested ranges (±20-50%)")
+            feedback_parts.append("- Try alternative mathematical formulations (e.g., squared vs linear)")
+            feedback_parts.append("- Experiment with different conditional logic and threshold values")
+            feedback_parts.append("- Balance between following suggestions and creative exploration")
+
+            # Note: alternative_directions are NOT included here
+            # They are passed separately to _generate_with_directions() for per-sample distribution
+
+            feedback_parts.append("\n---\n")
+
         # Get best result's evaluation summary (LaRes-style feedback)
         # TensorBoard data is handled by elite voter, not included in feedback
         # best_result is already selected by elite voter (or fallback heuristic)

@@ -127,18 +127,24 @@ class VisLandingEnv(DroneGymEnvsBase):
         speed_condition = self.velocity.norm(dim=1) <= 0.3
         return (horizontal_error <= self.success_radius) & height_condition & speed_condition
 
-    def get_reward(self) -> th.Tensor:
-        frame_error = self._pad_offset.norm(dim=1)
+    def get_reward(self, predicted_obs=None) -> th.Tensor:
+        # Use - 0 to avoid in-place grad error when env state is updated next step (BPTT/SHAC)
+        pos = self.position - 0
+        vel = self.velocity - 0
+        angvel = self.angular_velocity - 0
+        pad = self._pad_offset - 0
+
+        frame_error = pad.norm(dim=1)
         frame_reward = (1.0 - frame_error.clamp(max=1.0)) * 0.6
 
-        vertical_error = th.abs(self.position[:, 2] - self.target_height)
+        vertical_error = th.abs(pos[:, 2] - self.target_height)
         altitude_reward = (1.0 - (vertical_error / 2.0).clamp(max=1.0)) * 0.3
 
-        downward_speed = (-self.velocity[:, 2]).clamp(min=0.0)
+        downward_speed = (-vel[:, 2]).clamp(min=0.0)
         descent_reward = 0.1 * downward_speed
 
-        stability_penalty = 0.05 * self.velocity.norm(dim=1)
-        angular_penalty = 0.02 * self.angular_velocity.norm(dim=1)
+        stability_penalty = 0.05 * vel.norm(dim=1)
+        angular_penalty = 0.02 * angvel.norm(dim=1)
 
         success_bonus = self.success.float() * 5.0
         collision_penalty = self.is_collision.float() * 5.0

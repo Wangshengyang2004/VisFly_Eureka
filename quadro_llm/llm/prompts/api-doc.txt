@@ -62,7 +62,10 @@ General Safety Notes
 - Omit terms not listed here or not surfaced by the environment stub; do not guess.
 - Do not guard attribute access with `hasattr` / `if attr exists` branches.
 - Always operate on clones or expressions like `(tensor - 0)` to avoid modifying simulator buffers.
+- **NEVER use terminal flags in reward computation**: `self.success`, `self.failure`, `self.is_collision`, `self.is_out_bounds`, `self.once_collided`. These are updated in-place each step and break gradient flow. Compute conditions from differentiable state (position, velocity) instead.
+- **Use `th.as_tensor(value, device=self.device)`** instead of `th.tensor()` for scalar constants to avoid graph overhead.
 - Avoid python floats inside `torch.where`; pass scalar floats, not new tensors with device mismatches.
+- Only call `.clamp()`, `.clamp_min()`, `.clamp_max()` on torch tensors; Python floats have no `.clamp` attribute. Do not use `.item()` or other scalars before clamping—keep values as tensors.
 - Clamp divisions with small epsilon (`1e-6` or `1e-8`) to keep gradients finite.
 - Never change `self.*` buffers in-place (e.g., `self.position +=` is forbidden).
 - Keep outputs finite: guard against `nan`/`inf` using `torch.where` or clamping.

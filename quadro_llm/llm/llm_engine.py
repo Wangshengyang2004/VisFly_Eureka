@@ -6,11 +6,13 @@ specifically designed for VisFly drone environments.
 """
 
 import logging
+import random
 import time
 import asyncio
 import concurrent.futures
 import json
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from openai import OpenAI, AsyncOpenAI
@@ -39,6 +41,28 @@ from ..utils.coefficient_tuner import (
 )
 
 
+# Fixed direction: combined, simplified, yet effective reward (reduces component creep)
+SIMPLIFY_DIRECTION: Dict[str, Any] = {
+    "focus": "combined_simplified_effective",
+    "description": (
+        "Produce a combined, simplified, yet effective reward: merge semantically overlapping "
+        "terms and remove redundant or negligible components while preserving task success. "
+        "Aim for fewer, interpretable reward components."
+    ),
+    "rationale": (
+        "Too many components cause competing gradients, harder tuning, and mode collapse. "
+        "A simplified reward is more stable and reproducible."
+    ),
+    "suggested_changes": [
+        "Merge multiple near-ground velocity penalties (e.g. r_crash, r_vel_decay, r_term_vel_cap) "
+        "into a single height-gated term where possible.",
+        "Remove terms with very small coefficients (e.g. -0.01 to -0.05) that contribute negligibly.",
+        "Keep core terms: progress, align, descent, stability, crash, success; merge or drop the rest.",
+        "Target roughly 8–12 components without reducing success rate.",
+    ],
+}
+
+
 class LLMEngine:
     """
     Engine for generating reward functions using Large Language Models.
@@ -65,7 +89,7 @@ class LLMEngine:
         batching_strategy: str = "n_parameter",
         supports_n_parameter: bool = True,
         max_concurrent: int = 10,
-        include_api_doc: bool = False,
+        include_api_doc: bool = True,
         api_doc_path: Optional[str] = None,
         include_human_reward: bool = False,
         history_window_size: int = 2,
@@ -121,8 +145,8 @@ class LLMEngine:
         # Initialize conversation history (for multi-turn dialogue with LLM)
         self.conversation_history: List[Dict[str, str]] = []
 
-        # Initialize conversation logging (for saving to disk)
-        self.conversations: List[Dict[str, Any]] = []
+        # Conversation log for the current iteration only (reset each start_iteration)
+        self.conversations_this_iter: List[Dict[str, Any]] = []
 
         # Preload optional API reference text for prompt augmentation
         self.api_doc_content: Optional[str] = None
@@ -203,9 +227,15 @@ class LLMEngine:
         samples: int = 16,
         env_class=None,
         previous_elite_reward: Optional[str] = None,
+        alternative_directions: Optional[List[Dict[str, Any]]] = None,
+        seed: Optional[int] = None,
     ) -> List[str]:
         """
         Generate multiple reward function candidates for a given task.
+
+        If alternative_directions is provided and samples > 1:
+        - Sample 0: uses standard feedback (best practices refinement)
+        - Sample 1+: uses different alternative_direction for diversity
 
         Args:
             task_description: Natural language description of the task
@@ -213,6 +243,8 @@ class LLMEngine:
             feedback: Feedback from previous iterations
             samples: Number of reward functions to generate
             env_class: Environment class to extract code from
+            previous_elite_reward: Previous elite reward function code
+            alternative_directions: List of alternative improvement directions from Agent Voter
 
         Returns:
             List of reward function code strings
@@ -228,17 +260,21 @@ class LLMEngine:
         # Extract environment code without reward (like real Eureka)
         env_code = extract_env_code_without_reward(env_class)
 
-        # Extract human reward if enabled
+        # Extract human reward only for first iteration (when no elite exists)
+        # After first iteration, elite reward is more valuable than human reference
         human_reward_code = None
-        if self.include_human_reward:
+        if self.include_human_reward and previous_elite_reward is None:
             human_reward_code = extract_human_reward(env_class)
             if human_reward_code:
-                self.logger.debug("Extracted human reward function for inclusion in prompt")
+                self.logger.debug("Extracted human reward function for first iteration")
             else:
                 self.logger.debug("Human reward extraction requested but failed (method may not exist)")
+        elif previous_elite_reward is not None:
+            self.logger.debug("Skipping human reward - using elite reward from previous iteration")
 
-        # Create prompts
-        system_prompt = create_system_prompt()
+        # Create prompts (BPTT/SHAC get dense-reward guidance in system prompt)
+        algorithm = str(context_info.get("algorithm", "bptt")).lower()
+        system_prompt = create_system_prompt(algorithm=algorithm)
         
         # Check if static info exists in conversation history
         # Static info (env_code, api_doc, task_description, context_info) should be preserved
@@ -259,11 +295,20 @@ class LLMEngine:
         # 2. history_window_size is 0 (Eureka-style, no history)
         # 3. Static info is not in current history window (was pruned)
         include_static_info = (
-            len(self.conversation_history) == 0 
+            len(self.conversation_history) == 0
             or self.history_window_size == 0
             or not has_static_info_in_history
         )
-        
+
+        # Do not put elite code in the current user message when we have any history:
+        # history already contains (feedback-only user, elite code assistant) pairs,
+        # so duplicating the code in the next user message is redundant and verbose.
+        # Saved artifacts should show user = comment/feedback only, assistant = reward code.
+        use_elite_in_prompt = (
+            len(self.conversation_history) == 0 and previous_elite_reward is not None
+        )
+        effective_elite = previous_elite_reward if use_elite_in_prompt else None
+
         user_prompt = create_user_prompt(
             task_description,
             context_info,
@@ -271,7 +316,7 @@ class LLMEngine:
             env_code,
             api_doc=self.api_doc_content if self.api_doc_content else None,
             human_reward_code=human_reward_code,
-            elite_reward_code=previous_elite_reward,
+            elite_reward_code=effective_elite,
             include_static_info=include_static_info,
         )
 
@@ -282,8 +327,17 @@ class LLMEngine:
 
         usage_before = self._usage_snapshot()
 
-        # Use appropriate batching strategy based on configuration
-        if self.batching_strategy == "adaptive":
+        # Check if we should use alternative_directions for diversity
+        use_directions = alternative_directions and len(alternative_directions) > 0 and samples > 1
+
+        if use_directions:
+            self.logger.info(
+                f"Using alternative_directions for diversity: {len(alternative_directions)} directions, +1 simplify, {samples} samples"
+            )
+            results = self._generate_with_directions(
+                messages, samples, system_prompt, alternative_directions, feedback, seed=seed
+            )
+        elif self.batching_strategy == "adaptive":
             # Adaptive strategy: intelligently choose the best available strategy
             if self.supports_n_parameter:
                 self.logger.debug("Adaptive strategy: using n_parameter (most efficient)")
@@ -306,6 +360,20 @@ class LLMEngine:
             # Fallback to sequential if strategy is unknown
             self.logger.warning(f"Unknown batching strategy '{self.batching_strategy}', falling back to sequential")
             results = self._generate_sequential(messages, samples)
+
+        # Regenerate missing samples if some failed
+        missing_count = samples - len(results)
+        if missing_count > 0:
+            self.logger.warning(
+                f"Only {len(results)}/{samples} samples generated. "
+                f"Regenerating {missing_count} missing samples..."
+            )
+            # Use sequential generation for reliability
+            retry_results = self._generate_sequential(messages, missing_count)
+            results.extend(retry_results)
+            self.logger.info(
+                f"After retry: {len(results)}/{samples} samples generated"
+            )
 
         usage_delta = self._usage_delta(usage_before)
 
@@ -721,13 +789,171 @@ class LLMEngine:
 
         return []
 
+    def _generate_with_directions(
+        self,
+        messages: List[Dict],
+        samples: int,
+        system_prompt: str,
+        alternative_directions: List[Dict[str, Any]],
+        base_feedback: str,
+        seed: Optional[int] = None,
+    ) -> List[str]:
+        """Generate samples by randomly assigning each sample to elite refinement or one of N alternative directions."""
+        reward_functions = []
+
+        # Find the user message (last message with role "user")
+        base_user_content = None
+        for msg in reversed(messages):
+            if msg["role"] == "user":
+                base_user_content = msg["content"]
+                break
+
+        if base_user_content is None:
+            self.logger.warning("No user message found for direction application")
+            return self._generate_sequential(messages, samples)
+
+        # Normalize to list of dicts (caller may pass dataclass instances)
+        direction_dicts = [
+            d if isinstance(d, dict) else asdict(d)
+            for d in alternative_directions
+        ]
+        # Group to sample from: N voter directions + 1 elite + 1 simplify => e.g. 3+1+1=5
+        options = [{"type": "elite", "feedback": base_feedback}] + [
+            {"type": "direction", "direction": d} for d in direction_dicts
+        ]
+        options.append({"type": "direction", "direction": SIMPLIFY_DIRECTION})
+        if seed is not None:
+            random.seed(seed)
+        # Sample from this group: when samples <= len(options), each option used at most once
+        if samples <= len(options):
+            chosen_list = random.sample(options, samples)
+        else:
+            chosen_list = random.sample(options, len(options)) + [
+                random.choice(options) for _ in range(samples - len(options))
+            ]
+            random.shuffle(chosen_list)
+
+        for i in range(samples):
+            chosen = chosen_list[i]
+            if chosen["type"] == "elite":
+                direction_feedback = chosen["feedback"]
+                self.logger.debug(f"Sample {i+1}/{samples}: elite refinement")
+            else:
+                direction_feedback = self._build_direction_feedback(
+                    base_feedback, chosen["direction"]
+                )
+                self.logger.debug(
+                    f"Sample {i+1}/{samples}: direction '{chosen['direction']['focus']}'"
+                )
+
+            direction_messages = self._build_messages_with_direction(
+                messages, system_prompt, base_user_content, direction_feedback
+            )
+
+            for attempt in range(self.max_retries):
+                try:
+                    request_params = self._build_request_params(direction_messages)
+                    response = self.client.chat.completions.create(**request_params)
+                    self._record_usage(
+                        getattr(response, "usage", None),
+                        meta={"strategy": "sequential_with_direction", "sample_index": i},
+                    )
+                    if response.choices:
+                        content = response.choices[0].message.content
+                        reward_code = extract_reward_function(content)
+                        if reward_code:
+                            reward_functions.append(reward_code)
+                        else:
+                            self.logger.warning(
+                                f"Could not extract reward function from sample {i+1}"
+                            )
+                    break
+                except Exception as e:
+                    self.logger.warning(
+                        f"Sample {i+1} attempt {attempt + 1} failed: {e}"
+                    )
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.RETRY_BACKOFF_BASE ** attempt)
+                    else:
+                        self.logger.error(f"Sample {i+1} failed after all retries")
+
+            if i < samples - 1:
+                time.sleep(self.SAMPLE_PAUSE_SECONDS)
+
+        return reward_functions
+
+    def _build_direction_feedback(self, base_feedback: str, direction: Dict[str, Any]) -> str:
+        """Build feedback string incorporating an alternative direction."""
+        parts = []
+
+        if base_feedback:
+            parts.append(base_feedback)
+            parts.append("")
+
+        parts.append(f"## Alternative Direction: {direction['focus']}")
+        parts.append(f"Description: {direction['description']}")
+        parts.append(f"Rationale: {direction['rationale']}")
+
+        suggested_changes = direction["suggested_changes"]
+        if suggested_changes:
+            parts.append("Suggested changes:")
+            for change in suggested_changes:
+                parts.append(f"  - {change}")
+
+        return "\n".join(parts)
+
+    def _build_messages_with_direction(
+        self,
+        messages: List[Dict],
+        system_prompt: str,
+        base_user_content: str,
+        direction_feedback: str,
+    ) -> List[Dict]:
+        """Build messages with direction-specific feedback injected."""
+        # Find and replace the feedback section in the user content
+        modified_content = base_user_content
+
+        # If there's existing feedback, replace it with direction feedback
+        if "## Required Modifications" in modified_content:
+            # Replace the existing feedback section
+            import re
+            pattern = r"(## Required Modifications.*?)(?=\n## |\n\n## |\n\nReturn only|$)"
+            replacement = f"## Required Modifications (from analysis):\n{direction_feedback}\n\n**IMPORTANT**: You MUST apply the specific direction above while maintaining code quality.\n"
+            modified_content = re.sub(pattern, replacement, modified_content, flags=re.DOTALL)
+        elif "Feedback from previous attempts" in modified_content:
+            # Replace the feedback section
+            import re
+            pattern = r"(Feedback from previous attempts.*?)(?=\n\nReturn only|$)"
+            replacement = f"Feedback from previous attempts (address every point):\n{direction_feedback}\n"
+            modified_content = re.sub(pattern, replacement, modified_content, flags=re.DOTALL)
+        else:
+            # Append the direction feedback before the final instruction
+            modified_content = modified_content.replace(
+                "\nReturn only the complete",
+                f"\n{direction_feedback}\n\nReturn only the complete"
+            )
+
+        # Build new messages
+        direction_messages = [{"role": "system", "content": system_prompt}]
+
+        # Include conversation history if present (skip original system message to avoid duplication)
+        for msg in messages:
+            if msg.get("role") == "system":
+                continue
+            elif msg.get("role") == "user" and msg.get("content") == base_user_content:
+                direction_messages.append({"role": "user", "content": modified_content})
+            else:
+                direction_messages.append(msg)
+
+        return direction_messages
+
     def _generate_sequential(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate samples sequentially (one API call per sample)."""
         reward_functions = []
-        
+
         for i in range(samples):
             self.logger.debug(f"Generating sample {i+1}/{samples}")
-            
+
             for attempt in range(self.max_retries):
                 try:
                     request_params = self._build_request_params(messages)
@@ -738,7 +964,7 @@ class LLMEngine:
                         getattr(response, "usage", None),
                         meta={"strategy": "sequential", "sample_index": i},
                     )
-                    
+
                     # Extract reward function from single response
                     if response.choices:
                         content = response.choices[0].message.content
@@ -747,20 +973,20 @@ class LLMEngine:
                             reward_functions.append(reward_code)
                         else:
                             self.logger.warning(f"Could not extract reward function from sample {i+1}")
-                    
+
                     break  # Success, move to next sample
-                    
+
                 except Exception as e:
                     self.logger.warning(f"Sample {i+1} attempt {attempt + 1} failed: {e}")
                     if attempt < self.max_retries - 1:
                         time.sleep(self.RETRY_BACKOFF_BASE ** attempt)  # Exponential backoff
                     else:
                         self.logger.error(f"Sample {i+1} failed after all retries")
-            
+
             # Brief pause between samples to respect rate limits
             if i < samples - 1:
                 time.sleep(self.SAMPLE_PAUSE_SECONDS)
-        
+
         return reward_functions
 
     @property
@@ -998,20 +1224,23 @@ class LLMEngine:
             },
             "token_usage": token_usage or {},
         }
-        self.conversations.append(conversation)
+        self.conversations_this_iter.append(conversation)
+
+    def start_iteration(self, iteration: int) -> None:
+        """Reset conversation log for the next iteration. Call before any generate_* in this iteration."""
+        self.conversations_this_iter = []
 
     def save_conversations(self, output_dir: str, iteration: int) -> None:
-        """Save all conversations to artifacts directory."""
+        """Save this iteration's conversations to artifacts directory."""
         output_path = Path(output_dir)
         artifacts_dir = output_path / "artifacts"
         artifacts_dir.mkdir(exist_ok=True)
-        
         conversation_file = artifacts_dir / f"llm_conversations_iteration_{iteration}.json"
-        
         with open(conversation_file, 'w', encoding='utf-8') as f:
-            json.dump(self.conversations, f, indent=2, ensure_ascii=False)
-        
-        self.logger.info(f"Saved {len(self.conversations)} conversations to {conversation_file}")
+            json.dump(self.conversations_this_iter, f, indent=2, ensure_ascii=False)
+        self.logger.info(
+            f"Saved {len(self.conversations_this_iter)} conversations for iteration {iteration} to {conversation_file}"
+        )
 
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the current model configuration."""

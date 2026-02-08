@@ -1,0 +1,16 @@
+# State-based landing task configuration
+
+task:
+  name: "landing"
+  category: "landing"
+  envs: "landing"
+
+  # Task description for LLM
+  description: >
+    State-based landing task using depth sensor and position state.
+
+    The drone must:
+    1. Approach the landing target from initial position
+    2. Align with the landing pad (position and orientation)
+    3. Descend smoothly and land within tolerance
+    4. Maintain stable flight dynamics during descent

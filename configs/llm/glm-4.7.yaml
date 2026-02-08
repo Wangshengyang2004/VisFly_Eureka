@@ -7,7 +7,5 @@ llm:
   thinking:
     enabled: true
   batching:
-    strategy: "adaptive"
-    supports_n_parameter: true
-    max_concurrent: 8
+    strategy: "sequential"
 

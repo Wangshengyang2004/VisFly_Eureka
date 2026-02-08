@@ -36,7 +36,11 @@ class EliteVoterResult:
     """Result from elite voter LLM agent"""
     selected_index: int
     reasoning: str
-    confidence: Optional[float] = None
+    selected_identifier: Optional[str] = None
+    analysis_summary: Optional[str] = None
+    candidate_count: int = 0
+    conversation: Optional[list] = None
+    code_level_feedback: Optional[Any] = None
 
 
 class MockEnv:
@@ -62,6 +66,7 @@ class MockLLMEngine:
         samples: int,
         env_class,
         previous_elite_reward: str = None,
+        **kwargs,
     ) -> List[str]:
         """Mock reward function generation"""
         # Generate mock reward functions
@@ -107,17 +112,17 @@ class MockEliteVoter:
             return EliteVoterResult(
                 selected_index=0,
                 reasoning="All candidates failed",
-                confidence=0.0
+                selected_identifier=results[0].identifier if results else "sample0",
             )
-        
+
         # Select the result with highest success_rate
         best_result = max(successful_results, key=lambda r: (r.success_rate, -r.episode_length))
         selected_index = results.index(best_result)
-        
+
         return EliteVoterResult(
             selected_index=selected_index,
             reasoning=f"Selected {best_result.identifier} with success_rate={best_result.success_rate:.3f}",
-            confidence=0.8 + (best_result.success_rate * 0.1)  # Mock confidence based on success
+            selected_identifier=best_result.identifier,
         )
 
 
@@ -192,8 +197,7 @@ def mock_eureka_visfly():
     
     # Use patch to replace the classes before instantiation
     with patch('quadro_llm.eureka_visfly.LLMEngine', MockLLMEngine), \
-         patch('quadro_llm.eureka_visfly.SubprocessRewardEvaluator', MockSubprocessEvaluator), \
-         patch('quadro_llm.eureka_visfly.extract_environment_context_minimal', return_value="Mock context"):
+         patch('quadro_llm.eureka_visfly.SubprocessRewardEvaluator', MockSubprocessEvaluator):
         
         opt_config = OptimizationConfig(
             iterations=3,
@@ -299,7 +303,7 @@ def test_iteration_increment(mock_eureka_visfly):
                 vote_result = mock_eureka_visfly.elite_voter.vote(iteration_results)
                 best_result = iteration_results[vote_result.selected_index]
                 mock_eureka_visfly.best_reward_functions.append(best_result.reward_code)
-                mock_eureka_visfly.elite_vote_results.append(vote_result)
+                mock_eureka_visfly.elite_vote_results[iteration] = vote_result
                 
                 # Verify vote_result matches best_result
                 assert iteration_results[vote_result.selected_index].identifier == best_result.identifier, \
@@ -387,7 +391,7 @@ def test_elite_voter_index_consistency(mock_eureka_visfly):
         vote_result = mock_eureka_visfly.elite_voter.vote(mock_results)
         best_result = mock_results[vote_result.selected_index]
         mock_eureka_visfly.best_reward_functions.append(best_result.reward_code)
-        mock_eureka_visfly.elite_vote_results.append(vote_result)
+        mock_eureka_visfly.elite_vote_results[iteration] = vote_result
         
         # Verify index is valid
         assert 0 <= vote_result.selected_index < len(mock_results), \
@@ -397,9 +401,6 @@ def test_elite_voter_index_consistency(mock_eureka_visfly):
         assert mock_results[vote_result.selected_index].identifier == best_result.identifier, \
             f"Iteration {iteration}: Selected result identifier should match"
         
-        # Verify confidence is reasonable
-        assert 0.0 <= vote_result.confidence <= 1.0, \
-            f"Iteration {iteration}: Confidence should be in [0, 1]"
 
 
 def test_feedback_generation_uses_correct_iteration_data(mock_eureka_visfly):
@@ -456,7 +457,7 @@ def test_feedback_generation_uses_correct_iteration_data(mock_eureka_visfly):
         vote_result = mock_eureka_visfly.elite_voter.vote(mock_results)
         best_result = mock_results[vote_result.selected_index]
         mock_eureka_visfly.best_reward_functions.append(best_result.reward_code)
-        mock_eureka_visfly.elite_vote_results.append(vote_result)
+        mock_eureka_visfly.elite_vote_results[iteration] = vote_result
         
         # Test feedback generation for NEXT iteration
         if iteration < iterations - 1:
@@ -478,9 +479,6 @@ def test_feedback_generation_uses_correct_iteration_data(mock_eureka_visfly):
             stored_vote_result = mock_eureka_visfly.elite_vote_results[iteration]
             assert stored_vote_result.selected_index == vote_result.selected_index, \
                 f"Stored vote result index should match for iteration {iteration}"
-            assert stored_vote_result.confidence == vote_result.confidence, \
-                f"Stored vote result confidence should match for iteration {iteration}"
-            
             # Verify feedback contains expected information
             assert "win rate" in feedback.lower() or "success" in feedback.lower(), \
                 f"Feedback should contain performance metrics"
@@ -542,7 +540,7 @@ def test_feedback_uses_elite_voter_selection(mock_eureka_visfly):
         vote_result = mock_eureka_visfly.elite_voter.vote(mock_results)
         best_result = mock_results[vote_result.selected_index]
         mock_eureka_visfly.best_reward_functions.append(best_result.reward_code)
-        mock_eureka_visfly.elite_vote_results.append(vote_result)
+        mock_eureka_visfly.elite_vote_results[iteration] = vote_result
         
         # Verify elite voter selected sample2 (index 2)
         assert vote_result.selected_index == 2, \
@@ -610,7 +608,7 @@ def test_index_consistency_between_data_structures(mock_eureka_visfly):
         vote_result = mock_eureka_visfly.elite_voter.vote(mock_results)
         best_result = mock_results[vote_result.selected_index]
         mock_eureka_visfly.best_reward_functions.append(best_result.reward_code)
-        mock_eureka_visfly.elite_vote_results.append(vote_result)
+        mock_eureka_visfly.elite_vote_results[iteration] = vote_result
         
         # Verify consistency: complete_iteration_results[iteration] should match
         assert len(mock_eureka_visfly.complete_iteration_results) == iteration + 1, \
@@ -640,8 +638,8 @@ def test_index_consistency_between_data_structures(mock_eureka_visfly):
                 f"Iteration {iteration}: Elite selection should be found in optimization_history"
 
 
-def test_feedback_uses_correct_vote_result_confidence(mock_eureka_visfly):
-    """Test that feedback generation uses the correct vote_result confidence from the right iteration"""
+def test_feedback_uses_correct_vote_result_per_iteration(mock_eureka_visfly):
+    """Test that feedback generation uses the correct vote_result from the right iteration"""
     
     iterations = 3
     samples = 5
@@ -688,13 +686,12 @@ def test_feedback_uses_correct_vote_result_confidence(mock_eureka_visfly):
         vote_result = mock_eureka_visfly.elite_voter.vote(mock_results)
         best_result = mock_results[vote_result.selected_index]
         mock_eureka_visfly.best_reward_functions.append(best_result.reward_code)
-        mock_eureka_visfly.elite_vote_results.append(vote_result)
+        mock_eureka_visfly.elite_vote_results[iteration] = vote_result
         
         vote_results_by_iteration.append({
             "iteration": iteration,
             "vote_result": vote_result,
             "best_identifier": best_result.identifier,
-            "confidence": vote_result.confidence,
         })
         
         # Test feedback generation for next iteration uses THIS iteration's vote_result
@@ -708,10 +705,7 @@ def test_feedback_uses_correct_vote_result_confidence(mock_eureka_visfly):
             
             # Verify the stored vote_result matches what should be used
             stored_vote_result = mock_eureka_visfly.elite_vote_results[iteration]
-            assert stored_vote_result.confidence == vote_result.confidence, \
-                f"Stored vote result confidence should match for iteration {iteration}"
-            
-            # Verify feedback contains the confidence value (indirectly, through the reasoning)
+            # Verify feedback contains the selection (indirectly, through the reasoning)
             # The feedback includes vote_result.reasoning which should reference the correct selection
             assert vote_result.reasoning in feedback or best_result.identifier in feedback, \
                 f"Feedback should reference the elite selection from iteration {iteration}"

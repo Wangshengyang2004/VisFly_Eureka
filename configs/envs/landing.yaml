@@ -1,23 +1,20 @@
 env:
   num_agent_per_scene: 120
   max_episode_steps: 400
-  sensor_kwargs:
-    - sensor_type: DEPTH
-      uuid: depth
-      resolution: [64, 64]
-      position: [0, 0.0, -0.2]  # Downward facing for landing
+  sensor_kwargs: []  # LandingEnv uses state-only observation
   scene_kwargs:
-    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty"
   dynamics_kwargs:
     dt: 0.02
     ctrl_dt: 0.02
     action_type: "bodyrate"
     ctrl_delay: true
     cfg: "drone_d435i"
-  visual: true
+  visual: false  # State-only env, no visual rendering needed for training
   requires_grad: true
   tensor_output: true
   device: "cpu"
+  target: [5.0, 0.0, 0.2]  # Landing pad position (x, y, z)
   random_kwargs:
     state_generator:
       class: "Uniform"
@@ -35,21 +32,23 @@ env:
             mean: [0.0, 0.0, 0.0]
             half: [0.2, 0.2, 0.2]
 
-# Evaluation environment
+# Evaluation environment (aligned with hover for consistent render path)
 eval_env:
   num_agent_per_scene: 1
   max_episode_steps: 400
   visual: true
   tensor_output: true
+  sensor_kwargs: []
   scene_kwargs:
-    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_box15_wall"
+    path: "VisFly/datasets/visfly-beta/configs/scenes/box15_wall_empty"
     render_settings:
-      mode: fix
+      mode: follow
       view: custom
       resolution: [1080, 1920]
       position: [[5.0, -8.0, 3.0], [5.0, 0.0, 2.0]]  # Side view of landing
       line_width: 6.0
       trajectory: true
+      axes: true
   dynamics_kwargs:
     dt: 0.02
     ctrl_dt: 0.02
@@ -58,6 +57,7 @@ eval_env:
     cfg: "drone_d435i"
   requires_grad: false
   device: "cpu"
+  landing_target: [5.0, 0.0, 0.2]  # Landing pad position for evaluation
   random_kwargs:
     state_generator:
       class: "Uniform"
@@ -65,11 +65,3 @@ eval_env:
         - position:
             mean: [5.0, 0.0, 4.0]
             half: [2.0, 2.0, 0.5]
-  landing_target: [5.0, 0.0, 0.2]
-  landing_tolerance:
-    position: 0.5
-    altitude: 0.1
-    velocity: 0.2
-    angular_velocity: 0.1
-  wind_disturbance:
-    enabled: false  # Disable for evaluation consistency
