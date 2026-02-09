@@ -100,7 +100,7 @@ class AgentVoter:
         return metrics_by_sample
 
     def _build_history_file(self, output_dir: Path, iteration: int, history_window: int) -> Optional[Path]:
-        """Concat previous N iterations' voter traces into a single markdown file.
+        """Concat previous N iterations' vote results and selected reward code into a single markdown file.
 
         Returns path to the file, or None if no history exists.
         """
@@ -113,16 +113,18 @@ class AgentVoter:
         sections = []
         for prev_iter in range(start_iter, iteration):
             result_file = artifacts_dir / f"agent_voter_result_iter{prev_iter}.json"
-            conv_file = artifacts_dir / f"agent_voter_conversation_iter{prev_iter}.json"
-
             if not result_file.exists():
                 continue
 
+            result_text = result_file.read_text()
             sections.append(f"# Iteration {prev_iter}\n")
-            sections.append(f"## Vote Result\n```json\n{result_file.read_text()}\n```\n")
+            sections.append(f"## Vote Result\n```json\n{result_text}\n```\n")
 
-            if conv_file.exists():
-                sections.append(f"## Agent Conversation Trace\n```json\n{conv_file.read_text()}\n```\n")
+            # Embed the selected reward function for code-level context
+            selected_id = json.loads(result_text)["selected_identifier"]
+            reward_file = output_dir / "train" / f"iter{prev_iter}" / selected_id / "reward_function.py"
+            if reward_file.exists():
+                sections.append(f"## Selected Reward Function ({selected_id})\n```python\n{reward_file.read_text()}\n```\n")
 
         if not sections:
             return None
