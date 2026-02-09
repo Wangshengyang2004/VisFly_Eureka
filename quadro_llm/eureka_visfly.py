@@ -849,10 +849,6 @@ class EurekaVisFly:
                 for insight in clf.training_insights:
                     feedback_parts.append(f"- {insight}")
 
-            # Convergence issues
-            if clf.convergence_issues:
-                feedback_parts.append(f"\n### Convergence Issue: {clf.convergence_issues}")
-
             # Diversity note: encourage exploration around suggested fixes
             feedback_parts.append("\n### Implementation Diversity:")
             feedback_parts.append("While applying the above fixes, explore different implementation strategies:")

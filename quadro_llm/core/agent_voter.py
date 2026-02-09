@@ -127,7 +127,7 @@ class AgentVoter:
         if not sections:
             return None
 
-        history_file = output_dir / "voter_history.md"
+        history_file = artifacts_dir / "voter_history.md"
         history_file.write_text("\n".join(sections))
         self.logger.info(f"Built voter history file with {len(sections)} sections from iter {start_iter}-{iteration - 1}")
         return history_file
@@ -247,15 +247,15 @@ Write your final decision to {result_file} as JSON with this structure:
         "successful_patterns": [
             "<component_name>: <description with value and effect>"
         ],
-        // Training observations
+        // Training observations (include any convergence issues as entries here, e.g. "Convergence: ...")
         "training_insights": [
             "<observation about training dynamics>"
-        ],
-        // Convergence description or null
-        "convergence_issues": "<description like 'oscillating at target' or null>"
+        ]
 {directions_json_inline}
     }}
 }}
+
+Anti-redundancy: Keep reasoning short (2-4 sentences). In training_insights do not repeat reasoning/analysis_summary; include convergence issues as entries here. In alternative_directions use one-sentence rationale and brief description; put detail in suggested_changes only.
 
 IMPORTANT: All values must be valid JSON. Use strings for descriptions, arrays for lists. Keep the structure flat and simple.
 
@@ -307,8 +307,7 @@ Focus on ACTIONABLE feedback that tells the LLM exactly what to change in the ne
             }
 
         candidate_count = len(candidates)
-        agent_summary = result_data["analysis_summary"].strip()
-        analysis_summary = f"Analyzed {candidate_count} candidates. {agent_summary}" if agent_summary else f"Analyzed {candidate_count} candidates."
+        analysis_summary = result_data["analysis_summary"]
 
         # Parse code_level_feedback if present
         code_level_feedback = None
