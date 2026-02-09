@@ -814,20 +814,12 @@ class EurekaVisFly:
             if clf.problematic_components:
                 feedback_parts.append("\n### Problematic Components to Fix:")
                 for comp in clf.problematic_components:
+                    line = f"- {comp.issue}"
                     if comp.suggested_value is not None:
-                        feedback_parts.append(
-                            f"- {comp.component} (current={comp.current_value}): "
-                            f"{comp.issue} → Suggested: {comp.suggested_value}"
-                        )
+                        line += f" → Suggested: {comp.suggested_value}"
                     elif comp.suggested_action:
-                        feedback_parts.append(
-                            f"- {comp.component} (current={comp.current_value}): "
-                            f"{comp.issue} → {comp.suggested_action}"
-                        )
-                    else:
-                        feedback_parts.append(
-                            f"- {comp.component} (current={comp.current_value}): {comp.issue}"
-                        )
+                        line += f" → {comp.suggested_action}"
+                    feedback_parts.append(line)
 
             # Missing components
             if clf.missing_components:
@@ -839,9 +831,7 @@ class EurekaVisFly:
             if clf.successful_patterns:
                 feedback_parts.append("\n### Successful Patterns to Keep:")
                 for pattern in clf.successful_patterns:
-                    feedback_parts.append(
-                        f"- {pattern.component}={pattern.value}: {pattern.effect}"
-                    )
+                    feedback_parts.append(f"- {pattern.effect}")
 
             # Training insights
             if clf.training_insights:

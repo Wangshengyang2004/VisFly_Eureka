@@ -483,7 +483,10 @@ class SubprocessRewardEvaluator:
                 try:
                     result = future.result()
                     results_map[idx] = result
-                    self.logger.debug(f"Completed evaluation {idx + 1}/{len(reward_functions)}: {identifiers[idx]}")
+                    if not result.training_successful:
+                        self.logger.warning(f"[{identifiers[idx]}] {result.error_message}")
+                    else:
+                        self.logger.debug(f"Completed evaluation {idx + 1}/{len(reward_functions)}: {identifiers[idx]}")
                 except Exception as e:
                     self.logger.error(f"Failed evaluation {idx + 1}: {e}")
                     results_map[idx] = RewardFunctionResult.failed(

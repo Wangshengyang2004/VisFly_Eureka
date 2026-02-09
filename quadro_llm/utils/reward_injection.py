@@ -298,8 +298,13 @@ def extract_reward_function(llm_response: str) -> Optional[str]:
             logger.error("Extracted reward function does not start with the expected signature")
             return None
 
-        logger.debug(f"Extracted reward function:\n{extracted_code}")
+        try:
+            ast.parse(extracted_code)
+        except SyntaxError as e:
+            logger.warning("Reward code syntax error: %s", e)
+            return None
 
+        logger.debug(f"Extracted reward function:\n{extracted_code}")
         return extracted_code
 
     except Exception as e:

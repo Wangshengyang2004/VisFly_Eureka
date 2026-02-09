@@ -769,13 +769,32 @@ class LLMEngine:
                 for choice in response.choices:
                     content = choice.message.content
                     reward_code = extract_reward_function(content)
-
                     if reward_code:
                         reward_functions.append(reward_code)
-                    else:
-                        self.logger.warning(
-                            "Could not extract reward function from response"
-                        )
+                        continue
+                    self.logger.warning(
+                        "Could not extract reward function from response, retrying..."
+                    )
+                    for syntax_attempt in range(self.max_retries):
+                        try:
+                            retry_params = self._build_request_params(messages, n_samples=1)
+                            retry_response = self.client.chat.completions.create(**retry_params)
+                            self._record_usage(
+                                getattr(retry_response, "usage", None),
+                                meta={"strategy": "n_parameter", "requested": 1},
+                            )
+                            if retry_response.choices:
+                                content2 = retry_response.choices[0].message.content
+                                reward_code = extract_reward_function(content2)
+                                if reward_code:
+                                    reward_functions.append(reward_code)
+                                    break
+                        except Exception as e:
+                            self.logger.warning(
+                                f"Supplemental extract retry {syntax_attempt + 1} failed: {e}"
+                            )
+                        if syntax_attempt < self.max_retries - 1:
+                            time.sleep(self.RETRY_BACKOFF_BASE ** syntax_attempt)
 
                 return reward_functions
 
@@ -863,11 +882,12 @@ class LLMEngine:
                         reward_code = extract_reward_function(content)
                         if reward_code:
                             reward_functions.append(reward_code)
-                        else:
-                            self.logger.warning(
-                                f"Could not extract reward function from sample {i+1}"
-                            )
-                    break
+                            break
+                        self.logger.warning(
+                            f"Could not extract reward function from sample {i+1}"
+                        )
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.RETRY_BACKOFF_BASE ** attempt)
                 except Exception as e:
                     self.logger.warning(
                         f"Sample {i+1} attempt {attempt + 1} failed: {e}"
@@ -971,11 +991,10 @@ class LLMEngine:
                         reward_code = extract_reward_function(content)
                         if reward_code:
                             reward_functions.append(reward_code)
-                        else:
-                            self.logger.warning(f"Could not extract reward function from sample {i+1}")
-
-                    break  # Success, move to next sample
-
+                            break
+                        self.logger.warning(f"Could not extract reward function from sample {i+1}")
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.RETRY_BACKOFF_BASE ** attempt)
                 except Exception as e:
                     self.logger.warning(f"Sample {i+1} attempt {attempt + 1} failed: {e}")
                     if attempt < self.max_retries - 1:
@@ -999,24 +1018,23 @@ class LLMEngine:
     def _generate_async(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate samples asynchronously."""
         async def generate_single_async(session_id: int) -> Optional[str]:
-            try:
-                request_params = self._build_request_params(messages)
-
-                # Use async client for true concurrent HTTP requests
-                response = await self.async_client.chat.completions.create(**request_params)
-
-                self._record_usage(
-                    getattr(response, "usage", None),
-                    meta={"strategy": "async", "session_id": session_id},
-                )
-
-                if response.choices:
-                    content = response.choices[0].message.content
-                    return extract_reward_function(content)
-                
-            except Exception as e:
-                self.logger.warning(f"Async sample {session_id} failed: {e}")
-            
+            for attempt in range(self.max_retries):
+                try:
+                    request_params = self._build_request_params(messages)
+                    response = await self.async_client.chat.completions.create(**request_params)
+                    self._record_usage(
+                        getattr(response, "usage", None),
+                        meta={"strategy": "async", "session_id": session_id},
+                    )
+                    if response.choices:
+                        content = response.choices[0].message.content
+                        reward_code = extract_reward_function(content)
+                        if reward_code:
+                            return reward_code
+                except Exception as e:
+                    self.logger.warning(f"Async sample {session_id} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.RETRY_BACKOFF_BASE ** attempt)
             return None
         
         async def run_async_batch():
@@ -1043,30 +1061,23 @@ class LLMEngine:
     def _generate_multiprocessing(self, messages: List[Dict], samples: int) -> List[str]:
         """Generate samples using multiprocessing."""
         def generate_single_mp(session_id: int) -> Optional[str]:
-            try:
-                # Create new client instance for this process
-                client_kwargs = {}
-                if hasattr(self, 'client'):
-                    client_kwargs = self.client._client._default_headers  # Copy headers if needed
-                
-                # Note: This is simplified - in practice you'd need to properly recreate the client
-                # with the same configuration in each process
-                request_params = self._build_request_params(messages)
-
-                response = self.client.chat.completions.create(**request_params)
-
-                self._record_usage(
-                    getattr(response, "usage", None),
-                    meta={"strategy": "thread_pool", "session_id": session_id},
-                )
-
-                if response.choices:
-                    content = response.choices[0].message.content
-                    return extract_reward_function(content)
-                    
-            except Exception as e:
-                self.logger.warning(f"Multiprocessing sample {session_id} failed: {e}")
-            
+            for attempt in range(self.max_retries):
+                try:
+                    request_params = self._build_request_params(messages)
+                    response = self.client.chat.completions.create(**request_params)
+                    self._record_usage(
+                        getattr(response, "usage", None),
+                        meta={"strategy": "thread_pool", "session_id": session_id},
+                    )
+                    if response.choices:
+                        content = response.choices[0].message.content
+                        reward_code = extract_reward_function(content)
+                        if reward_code:
+                            return reward_code
+                except Exception as e:
+                    self.logger.warning(f"Multiprocessing sample {session_id} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.RETRY_BACKOFF_BASE ** attempt)
             return None
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_concurrent) as executor:
